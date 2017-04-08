@@ -6,15 +6,19 @@ extern crate shlex;
 use chan_signal::Signal;
 use tty::{FileDesc, TtyServer};
 
-use std::process::{Command, Stdio};
+use std::process::{Command, Stdio, Child};
 use std::io;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 
 pub struct Runny {
-    tty: TtyServer,
     cmd: String,
     args: Vec<String>,
     working_directory: Option<String>,
+}
+
+pub struct Running {
+    tty: TtyServer,
+    child: Child,
 }
 
 pub enum RunnyError {
@@ -33,11 +37,7 @@ impl Runny {
         let mut args = Self::make_command(cmd)?;
         let cmd = args.remove(0);
 
-        // Create a new session, tied to stdin (FD number 0)
-        let stdin_fd = tty::FileDesc::new(0 as i32, true);
-        let tty = TtyServer::new(Some(&stdin_fd))?;
         Ok(Runny {
-            tty: tty,
             cmd: cmd,
             args: args,
             working_directory: None,
@@ -48,8 +48,13 @@ impl Runny {
         self.working_directory = Some(wd.to_string());
     }
 
-    pub fn start(&mut self) -> Result<(), RunnyError> {
-        let (mut slave_fd, stdin, stdout, stderr) = match self.tty.take_slave() {
+    pub fn start(&self) -> Result<Running, RunnyError> {
+
+        // Create a new session, tied to stdin (FD number 0)
+        let stdin_fd = tty::FileDesc::new(0 as i32, true);
+        let mut tty = TtyServer::new(Some(&stdin_fd))?;
+
+        let (mut slave_fd, stdin, stdout, stderr) = match tty.take_slave() {
             // TODO: Use pipes if no TTY
             Some(slave_fd) => {
                 let fd = slave_fd.as_raw_fd();
@@ -63,7 +68,6 @@ impl Runny {
             }
             None => (None, Stdio::inherit(), Stdio::inherit(), Stdio::inherit()),
         };
-        let master = self.tty.get_master();
 
         let mut cmd = Command::new(&self.cmd);
         cmd.stdin(stdin)
@@ -75,7 +79,12 @@ impl Runny {
             cmd.current_dir(wd);
         }
 
-        Ok(())
+        let child = cmd.spawn()?;
+
+        Ok(Running {
+            tty: tty,
+            child: child,
+        })
     }
 
     fn make_command(cmd: &str) -> Result<Vec<String>, RunnyError> {
