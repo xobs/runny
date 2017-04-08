@@ -1,6 +1,7 @@
 extern crate tty;
 extern crate chan_signal;
 extern crate libc;
+extern crate shlex;
 
 use chan_signal::Signal;
 use std::process::Command;
@@ -9,10 +10,13 @@ use std::io;
 
 pub struct Runny {
     tty: TtyServer,
+    cmd: String,
+    args: Vec<String>,
 }
 
 pub enum RunnyError {
     RunnyIoError(io::Error),
+    NoCommandSpecified,
 }
 
 impl From<std::io::Error> for RunnyError {
@@ -22,10 +26,33 @@ impl From<std::io::Error> for RunnyError {
 }
 
 impl Runny {
-    pub fn new() -> Result<Runny, RunnyError> {
+    pub fn new(cmd: &str) -> Result<Runny, RunnyError> {
+        let mut args = Self::make_command(cmd)?;
+        let cmd = args.remove(0);
+
+        // Create a new session, tied to stdin (FD number 0)
         let stdin_fd = tty::FileDesc::new(0 as i32, true);
         let tty = TtyServer::new(Some(&stdin_fd))?;
-        Ok(Runny { tty: tty })
+        Ok(Runny {
+            tty: tty,
+            cmd: cmd,
+            args: args,
+        })
+    }
+
+    pub fn start(&mut self) -> Result<(), RunnyError> {
+        let slave = self.tty.take_slave();
+        let master = self.tty.get_master();
+        Ok(())
+    }
+
+    fn make_command(cmd: &str) -> Result<Vec<String>, RunnyError> {
+        let cmd = cmd.to_string().replace("\\", "\\\\");
+        let cmd = cmd.as_str();
+        match shlex::split(cmd) {
+            None => Err(RunnyError::NoCommandSpecified),
+            Some(s) => Ok(s),
+        }
     }
 }
 
