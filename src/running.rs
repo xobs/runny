@@ -1,25 +1,25 @@
 extern crate nix;
 
-use chan_signal::Signal;
-use tty::{FileDesc, TtyServer};
+use tty::TtyServer;
 use self::nix::sys::signal::{SIGTERM, SIGKILL};
 use self::nix::sys::signal::kill;
 
-use std::process::{Command, Child, ExitStatus};
+use std::process::{Child, ExitStatus};
 use std::io::{self, Read, Result};
-use std::fmt;
 use std::fs::File;
-use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
+use std::fmt;
+use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use std::result;
+use std::sync::{Arc, Mutex};
 
 pub struct Running {
     tty: TtyServer,
     child: Child,
     stream: File,
-    timeout: Option<Duration>,
     timeout_thread: Option<JoinHandle<()>>,
+    exited: Arc<Mutex<bool>>,
 }
 
 pub enum RunningError {
@@ -39,21 +39,38 @@ impl From<self::nix::Error> for RunningError {
     }
 }
 
+impl fmt::Debug for RunningError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &RunningError::RunningIoError(ref e) => write!(f, "Running I/O error: {:?}", e),
+            &RunningError::RunningNixError(ref e) => write!(f, "Running Nix error: {:?}", e),
+        }
+    }
+}
+
 impl Running {
     pub fn new(tty: TtyServer, child: Child, timeout: Option<Duration>) -> Running {
         let file = unsafe { File::from_raw_fd(tty.get_master().as_raw_fd()) };
         let id = child.id() as i32;
 
+        let exited = Arc::new(Mutex::new(false));
+        let exited_thr = exited.clone();
+
         let thr = if let Some(t) = timeout {
             Some(thread::spawn(move || {
                 thread::park_timeout(t);
+                if *exited_thr.lock().unwrap() == true {
+                    return;
+                }
                 if let Err(e) = kill(-id, SIGTERM) {
                     println!("Got error sending SIGTERM: {:?}", e);
                 }
+
                 thread::park_timeout(Duration::from_secs(5));
-                if let Err(e) = kill(-id, SIGKILL) {
-                    println!("Got error sending SIGKILL: {:?}", e);
+                if *exited_thr.lock().unwrap() == true {
+                    return;
                 }
+                kill(-id, SIGKILL).ok();
             }))
         } else {
             None
@@ -62,8 +79,8 @@ impl Running {
             tty: tty,
             child: child,
             stream: file,
-            timeout: timeout,
             timeout_thread: thr,
+            exited: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -73,13 +90,19 @@ impl Running {
 
     pub fn terminate(&mut self, timeout: Option<Duration>) -> result::Result<(), RunningError> {
         let pid = self.child.id() as i32;
+        if *self.exited.lock().unwrap() == true {
+            return Ok(());
+        }
+
         // If there's a timeout, give the process some time to quit before sending a SIGKILL.
         let result = match timeout {
             None => {
-                match kill(-pid, SIGKILL) {
+                let ret = match kill(-pid, SIGKILL) {
                     Ok(_) => Ok(()),
                     Err(e) => Err(RunningError::RunningNixError(e)),
-                }
+                };
+                self.child.wait().ok();
+                ret
             }
             Some(t) => {
                 let thr = thread::spawn(move || {
@@ -91,11 +114,12 @@ impl Running {
                 });
 
                 // Wait for the child to terminate,
-                self.child.wait();
+                self.child.wait().ok();
                 thr.thread().unpark();
                 Ok(())
             }
         };
+        *self.exited.lock().unwrap() = true;
 
         if let Some(ref thr) = self.timeout_thread {
             thr.thread().unpark();
@@ -126,7 +150,7 @@ impl Read for Running {
 
 impl Drop for Running {
     fn drop(&mut self) {
-        // Terminate immediately.
-        self.terminate(None);
+        // Terminate immediately
+        self.terminate(None).ok();
     }
 }

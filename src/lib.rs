@@ -3,18 +3,14 @@ extern crate chan_signal;
 extern crate libc;
 extern crate shlex;
 
-use chan_signal::Signal;
-use tty::{FileDesc, TtyServer};
+use tty::TtyServer;
 
-use std::process::{Command, Child, ExitStatus};
+use std::process::Command;
 use std::io;
 use std::fmt;
-use std::fs::File;
-use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-pub mod Running;
+pub mod running;
 // use self::Running::Running;
 
 pub struct Runny {
@@ -65,7 +61,7 @@ impl Runny {
         self.timeout = Some(timeout.clone());
     }
 
-    pub fn start(&self) -> Result<Running::Running, RunnyError> {
+    pub fn start(&self) -> Result<running::Running, RunnyError> {
 
         // Create a new session, tied to stdin (FD number 0)
         let stdin_fd = tty::FileDesc::new(0 as i32, false);
@@ -87,10 +83,10 @@ impl Runny {
 
         // Spawn a child.  Since we're doing this with a TtyServer,
         // it will have its own session, and will terminate
-        let mut child = tty.spawn(cmd)?;
+        let child = tty.spawn(cmd)?;
         // thread::spawn(move || proxy.wait());
 
-        Ok(Running::Running::new(tty, child, self.timeout))
+        Ok(running::Running::new(tty, child, self.timeout))
     }
 
     fn make_command(cmd: &str) -> Result<Vec<String>, RunnyError> {
@@ -107,6 +103,7 @@ impl Runny {
 mod tests {
     use super::*;
     use std::io::{Read, BufRead};
+    use std::time::Instant;
 
     #[test]
     fn launch_echo() {
@@ -134,17 +131,20 @@ mod tests {
 
     #[test]
     fn terminate_works() {
-        let cmd = Runny::new("/bin/bash -c 'echo -n Hi there; sleep 1000; echo -n Bye there'")
-            .unwrap();
+        let timeout_secs = 5;
+
+        let cmd = Runny::new("/bin/bash -c 'sleep 1000'").unwrap();
         let mut running = cmd.start().unwrap();
 
         let mut s = String::new();
         let start_time = Instant::now();
-        running.terminate(Some(Duration::from_secs(5)));
+        running.terminate(Some(Duration::from_secs(timeout_secs))).unwrap();
         let end_time = Instant::now();
         running.read_to_string(&mut s).unwrap();
 
-        assert_eq!(s, "Hi there");
+        assert_eq!(s, "");
+        // Give one extra second for timeout, to account for plumbing.
+        assert!(end_time.duration_since(start_time) < Duration::from_secs(timeout_secs + 1));
     }
 
     #[test]
