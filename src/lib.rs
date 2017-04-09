@@ -2,16 +2,18 @@ extern crate tty;
 extern crate chan_signal;
 extern crate libc;
 extern crate shlex;
+extern crate termios;
 
+use termios::{Termios, tcsetattr};
 use tty::TtyServer;
 
 use std::process::Command;
 use std::io;
 use std::fmt;
 use std::time::Duration;
+use std::os::unix::io::AsRawFd;
 
 pub mod running;
-// use self::Running::Running;
 
 pub struct Runny {
     cmd: String,
@@ -64,8 +66,9 @@ impl Runny {
     pub fn start(&self) -> Result<running::Running, RunnyError> {
 
         // Create a new session, tied to stdin (FD number 0)
-        let stdin_fd = tty::FileDesc::new(0 as i32, false);
-        let mut tty = TtyServer::new(Some(&stdin_fd))?;
+        // let stdin_fd = tty::FileDesc::new(0 as i32, false);
+        // let mut tty = TtyServer::new(Some(&stdin_fd))?;
+        let mut tty = TtyServer::new::<tty::FileDesc>(None)?;
 
         let mut cmd = Command::new(&self.cmd);
         cmd.env_clear()
@@ -74,12 +77,22 @@ impl Runny {
             cmd.current_dir(wd);
         }
 
-        // let signal = chan_signal::notify(&[Signal::WINCH]);
-        // let proxy = match tty.new_client(stdin_fd, Some(signal)) {
-        // Ok(p) => p,
-        // Err(e) => panic!("Error TTY client: {}", e),
-        // };
-        //
+        // Disable character echo.
+        let mut termios_master = Termios::from_fd(tty.get_master().as_raw_fd())?;
+        termios_master.c_iflag &=
+            !(termios::IGNBRK | termios::BRKINT | termios::PARMRK | termios::ISTRIP |
+              termios::INLCR | termios::IGNCR | termios::ICRNL | termios::IXON);
+        termios_master.c_oflag &= !termios::OPOST;
+        termios_master.c_lflag &=
+            !(termios::ECHO | termios::ECHONL | termios::ICANON | termios::ISIG | termios::IEXTEN);
+        termios_master.c_cflag &= !(termios::CSIZE | termios::PARENB);
+        termios_master.c_cflag |= termios::CS8;
+        termios_master.c_cc[termios::VMIN] = 1;
+        termios_master.c_cc[termios::VTIME] = 0;
+        // XXX: cfmakeraw
+        tcsetattr(tty.get_master().as_raw_fd(),
+                  termios::TCSANOW,
+                  &termios_master)?;
 
         // Spawn a child.  Since we're doing this with a TtyServer,
         // it will have its own session, and will terminate
@@ -102,7 +115,7 @@ impl Runny {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, BufRead};
+    use std::io::{Read, BufRead, Write};
     use std::time::Instant;
 
     #[test]
@@ -164,5 +177,23 @@ mod tests {
 
         // Give one extra second for timeout, to account for plumbing.
         assert!(end_time.duration_since(start_time) < Duration::from_secs(timeout_secs + 1));
+    }
+
+    #[test]
+    fn read_write() {
+        let mut cmd = Runny::new("/bin/bash -c 'echo Input:; read foo; echo Got string: \
+                                  -$foo-; sleep 1; echo Cool'")
+            .unwrap();
+        cmd.set_timeout(&Duration::from_secs(5));
+        let mut running = cmd.start().unwrap();
+
+        running.write("bar\n".as_bytes()).unwrap();
+
+        let mut result = String::new();
+        running.read_to_string(&mut result).unwrap();
+        println!("String: [{:?}]", result);
+
+        running.terminate(None).unwrap();
+        assert_eq!(result, "Input:\nGot string: -bar-\nCool\n");
     }
 }

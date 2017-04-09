@@ -5,7 +5,7 @@ use self::nix::sys::signal::{SIGTERM, SIGKILL};
 use self::nix::sys::signal::kill;
 
 use std::process::{Child, ExitStatus};
-use std::io::{self, Read, Result};
+use std::io::{self, Read, Result, Write};
 use std::fs::File;
 use std::fmt;
 use std::os::unix::io::{AsRawFd, FromRawFd};
@@ -14,6 +14,9 @@ use std::time::Duration;
 use std::result;
 use std::sync::{Arc, Mutex};
 
+// We must not drop "tty" until the process exits,
+// however we never actually /use/ tty.
+#[allow(dead_code)]
 pub struct Running {
     tty: TtyServer,
     child: Child,
@@ -62,8 +65,9 @@ impl Running {
                 if *exited_thr.lock().unwrap() == true {
                     return;
                 }
-                if let Err(e) = kill(-id, SIGTERM) {
-                    println!("Got error sending SIGTERM: {:?}", e);
+                if kill(-id, SIGTERM).is_err() {
+                    *exited_thr.lock().unwrap() = true;
+                    return;
                 }
 
                 thread::park_timeout(Duration::from_secs(5));
@@ -71,6 +75,7 @@ impl Running {
                     return;
                 }
                 kill(-id, SIGKILL).ok();
+                *exited_thr.lock().unwrap() = true;
             }))
         } else {
             None
@@ -99,7 +104,14 @@ impl Running {
             None => {
                 let ret = match kill(-pid, SIGKILL) {
                     Ok(_) => Ok(()),
-                    Err(e) => Err(RunningError::RunningNixError(e)),
+                    Err(e) => {
+                        // Unix will generate an ESRCH error if the process has already exited.
+                        if e == nix::Error::from_errno(nix::Errno::ESRCH) {
+                            Ok(())
+                        } else {
+                            Err(RunningError::RunningNixError(e))
+                        }
+                    }
                 };
                 self.child.wait().ok();
                 ret
@@ -145,6 +157,16 @@ impl Read for Running {
             }
             Ok(n) => Ok(n),
         }
+    }
+}
+
+impl Write for Running {
+    fn write(&mut self, buf: &[u8]) -> Result<usize> {
+        self.stream.write(buf)
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        self.stream.flush()
     }
 }
 
