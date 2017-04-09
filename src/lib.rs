@@ -12,7 +12,7 @@ use std::fmt;
 use std::fs::File;
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub mod Running;
 // use self::Running::Running;
@@ -134,22 +134,35 @@ mod tests {
 
     #[test]
     fn terminate_works() {
-        let cmd = Runny::new("/bin/bash -c 'echo Hi there; sleep 1000; echo Bye there'").unwrap();
+        let cmd = Runny::new("/bin/bash -c 'echo -n Hi there; sleep 1000; echo -n Bye there'")
+            .unwrap();
         let mut running = cmd.start().unwrap();
-        running.terminate(Some(Duration::from_secs(5)));
+
         let mut s = String::new();
-        running.read_to_string(&mut s);
-        println!("Str: [{}]", s);
+        let start_time = Instant::now();
+        running.terminate(Some(Duration::from_secs(5)));
+        let end_time = Instant::now();
+        running.read_to_string(&mut s).unwrap();
+
+        assert_eq!(s, "Hi there");
     }
 
     #[test]
     fn timeout_works() {
-        let mut cmd = Runny::new("/bin/bash -c 'echo Hi there; sleep 1000; echo Bye there'")
+        let timeout_secs = 1;
+        let mut cmd = Runny::new("/bin/bash -c 'echo -n Hi there; sleep 1000; echo -n Bye there'")
             .unwrap();
-        cmd.set_timeout(&Duration::from_secs(5));
+        cmd.set_timeout(&Duration::from_secs(timeout_secs));
+
+        let start_time = Instant::now();
         let mut running = cmd.start().unwrap();
         let mut s = String::new();
-        running.read_to_string(&mut s);
-        println!("Str: [{}]", s);
+        running.read_to_string(&mut s).unwrap();
+        let end_time = Instant::now();
+
+        assert_eq!(s, "Hi there");
+
+        // Give one extra second for timeout, to account for plumbing.
+        assert!(end_time.duration_since(start_time) < Duration::from_secs(timeout_secs + 1));
     }
 }

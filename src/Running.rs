@@ -46,14 +46,11 @@ impl Running {
 
         let thr = if let Some(t) = timeout {
             Some(thread::spawn(move || {
-                println!("Waiting for timeout...");
                 thread::park_timeout(t);
-                println!("Sending SIGTERM to {}", id);
                 if let Err(e) = kill(-id, SIGTERM) {
                     println!("Got error sending SIGTERM: {:?}", e);
                 }
                 thread::park_timeout(Duration::from_secs(5));
-                println!("Sending SIGKILL to {}", id);
                 if let Err(e) = kill(-id, SIGKILL) {
                     println!("Got error sending SIGKILL: {:?}", e);
                 }
@@ -77,7 +74,7 @@ impl Running {
     pub fn terminate(&mut self, timeout: Option<Duration>) -> result::Result<(), RunningError> {
         let pid = self.child.id() as i32;
         // If there's a timeout, give the process some time to quit before sending a SIGKILL.
-        match timeout {
+        let result = match timeout {
             None => {
                 match kill(-pid, SIGKILL) {
                     Ok(_) => Ok(()),
@@ -98,7 +95,13 @@ impl Running {
                 thr.thread().unpark();
                 Ok(())
             }
-        }
+        };
+
+        if let Some(ref thr) = self.timeout_thread {
+            thr.thread().unpark();
+        };
+
+        result
     }
 
     pub fn get_interface(&self) -> &File {
