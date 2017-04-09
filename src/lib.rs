@@ -196,4 +196,13 @@ mod tests {
         running.terminate(None).unwrap();
         assert_eq!(result, "Input:\nGot string: -bar-\nCool\n");
     }
+
+    #[test]
+    fn exit_codes() {
+        let cmd = Runny::new("/bin/true").unwrap();
+        assert_eq!(cmd.start().unwrap().result(), 0);
+
+        let cmd = Runny::new("/bin/false").unwrap();
+        assert_ne!(cmd.start().unwrap().result(), 0);
+    }
 }

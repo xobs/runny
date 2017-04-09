@@ -93,6 +93,18 @@ impl Running {
         self.child.wait()
     }
 
+    pub fn result(&mut self) -> i32 {
+        match self.child.wait() {
+            Ok(status) => {
+                match status.code() {
+                    Some(s) => s,
+                    None => -1,
+                }
+            }
+            Err(_) => -1,
+        }
+    }
+
     pub fn terminate(&mut self, timeout: Option<Duration>) -> result::Result<(), RunningError> {
         let pid = self.child.id() as i32;
         if *self.exited.lock().unwrap() == true {
