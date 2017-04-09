@@ -12,6 +12,7 @@ use std::fmt;
 use std::fs::File;
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
 use std::thread;
+use std::time::Duration;
 
 pub mod Running;
 // use self::Running::Running;
@@ -20,6 +21,7 @@ pub struct Runny {
     cmd: String,
     args: Vec<String>,
     working_directory: Option<String>,
+    timeout: Option<Duration>,
 }
 
 pub enum RunnyError {
@@ -51,11 +53,16 @@ impl Runny {
             cmd: cmd,
             args: args,
             working_directory: None,
+            timeout: None,
         })
     }
 
     pub fn set_directory(&mut self, wd: &str) {
         self.working_directory = Some(wd.to_string());
+    }
+
+    pub fn set_timeout(&mut self, timeout: &Duration) {
+        self.timeout = Some(timeout.clone());
     }
 
     pub fn start(&self) -> Result<Running::Running, RunnyError> {
@@ -83,7 +90,7 @@ impl Runny {
         let mut child = tty.spawn(cmd)?;
         // thread::spawn(move || proxy.wait());
 
-        Ok(Running::Running::new(tty, child))
+        Ok(Running::Running::new(tty, child, self.timeout))
     }
 
     fn make_command(cmd: &str) -> Result<Vec<String>, RunnyError> {
@@ -102,30 +109,47 @@ mod tests {
     use std::io::{Read, BufRead};
 
     #[test]
-    fn launch_ls() {
-        let cmd = Runny::new("/bin/ls -l /etc").unwrap();
-        // let cmd = Runny::new("tty").unwrap();
+    fn launch_echo() {
+        let cmd = Runny::new("/bin/echo -n 'Launch test echo works'").unwrap();
         let mut running = cmd.start().unwrap();
         let mut simple_str = String::new();
 
         running.read_to_string(&mut simple_str).unwrap();
-        println!("Read string: {}", simple_str);
+        assert_eq!(simple_str, "Launch test echo works");
     }
 
     #[test]
-    fn launch_ls_buffered() {
-        let cmd = Runny::new("/bin/ls -l /etc").unwrap();
-        // let cmd = Runny::new("tty").unwrap();
+    fn test_multi_lines() {
+        let cmd = Runny::new("/usr/bin/seq 1 5").unwrap();
         let running = cmd.start().unwrap();
 
+        let mut vec = vec![];
         for line in io::BufReader::new(running).lines() {
-            match line {
-                Ok(l) => println!("Read line: [{}]", l),
-                Err(e) => {
-                    println!("Read ERROR: {:?}", e);
-                    break;
-                }
-            }
+            vec.push(line.unwrap());
         }
+        assert_eq!(vec.len(), 5);
+        let vec_parsed: Vec<i32> = vec.iter().map(|x| x.parse().unwrap()).collect();
+        assert_eq!(vec_parsed, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn terminate_works() {
+        let cmd = Runny::new("/bin/bash -c 'echo Hi there; sleep 1000; echo Bye there'").unwrap();
+        let mut running = cmd.start().unwrap();
+        running.terminate(Some(Duration::from_secs(5)));
+        let mut s = String::new();
+        running.read_to_string(&mut s);
+        println!("Str: [{}]", s);
+    }
+
+    #[test]
+    fn timeout_works() {
+        let mut cmd = Runny::new("/bin/bash -c 'echo Hi there; sleep 1000; echo Bye there'")
+            .unwrap();
+        cmd.set_timeout(&Duration::from_secs(5));
+        let mut running = cmd.start().unwrap();
+        let mut s = String::new();
+        running.read_to_string(&mut s);
+        println!("Str: [{}]", s);
     }
 }
