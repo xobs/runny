@@ -71,18 +71,19 @@ impl Runny {
             cmd.current_dir(wd);
         }
 
-        let signal = chan_signal::notify(&[Signal::WINCH]);
-        let proxy = match tty.new_client(stdin_fd, Some(signal)) {
-            Ok(p) => p,
-            Err(e) => panic!("Error TTY client: {}", e),
-        };
+        // let signal = chan_signal::notify(&[Signal::WINCH]);
+        // let proxy = match tty.new_client(stdin_fd, Some(signal)) {
+        // Ok(p) => p,
+        // Err(e) => panic!("Error TTY client: {}", e),
+        // };
+        //
 
         // Spawn a child.  Since we're doing this with a TtyServer,
         // it will have its own session, and will terminate
         let mut child = tty.spawn(cmd)?;
-        thread::spawn(move || proxy.wait());
+        // thread::spawn(move || proxy.wait());
 
-        Ok(Running::Running::new(tty))
+        Ok(Running::Running::new(tty, child))
     }
 
     fn make_command(cmd: &str) -> Result<Vec<String>, RunnyError> {
@@ -104,10 +105,10 @@ mod tests {
     fn launch_ls() {
         let cmd = Runny::new("/bin/ls -l /etc").unwrap();
         // let cmd = Runny::new("tty").unwrap();
-        let running = cmd.start().unwrap();
+        let mut running = cmd.start().unwrap();
         let mut simple_str = String::new();
 
-        running.get_interface().read_to_string(&mut simple_str).unwrap();
+        running.read_to_string(&mut simple_str).unwrap();
         println!("Read string: {}", simple_str);
     }
 
@@ -117,7 +118,7 @@ mod tests {
         // let cmd = Runny::new("tty").unwrap();
         let running = cmd.start().unwrap();
 
-        for line in io::BufReader::new(running.get_interface()).lines() {
+        for line in io::BufReader::new(running).lines() {
             match line {
                 Ok(l) => println!("Read line: [{}]", l),
                 Err(e) => {
