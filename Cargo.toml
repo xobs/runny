@@ -3,6 +3,8 @@ name = "runny"
 version = "0.1.0"
 authors = ["Sean Cross <sean@xobs.io>"]
 description = "Run a program inside its own process group"
+license = "MIT"
+repository = "https://github.com/xobs/runny"
 
 [dependencies]
 shlex = "0.1.1"
@@ -12,4 +14,4 @@ tty = { git = "https://github.com/xobs/tty-rs.git", rev = "42599fb207c2c1a81b45a
 chan-signal = "0.2.0"
 libc = "0.2.21"
 nix = "0.8.0"
-termios = "0.2.*"
+termios = "0.2.2"
