@@ -6,22 +6,20 @@ extern crate shlex;
 use chan_signal::Signal;
 use tty::{FileDesc, TtyServer};
 
-use std::process::{Command, Stdio, Child, ExitStatus};
-use std::io::{self, Read};
+use std::process::{Command, Child, ExitStatus};
+use std::io;
 use std::fmt;
 use std::fs::File;
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
+use std::thread;
+
+pub mod Running;
+// use self::Running::Running;
 
 pub struct Runny {
     cmd: String,
     args: Vec<String>,
     working_directory: Option<String>,
-}
-
-pub struct Running {
-    tty: TtyServer,
-    child: Child,
-    master: std::fs::File,
 }
 
 pub enum RunnyError {
@@ -60,10 +58,10 @@ impl Runny {
         self.working_directory = Some(wd.to_string());
     }
 
-    pub fn start(&self) -> Result<Running, RunnyError> {
+    pub fn start(&self) -> Result<Running::Running, RunnyError> {
 
         // Create a new session, tied to stdin (FD number 0)
-        let stdin_fd = tty::FileDesc::new(0 as i32, true);
+        let stdin_fd = tty::FileDesc::new(0 as i32, false);
         let mut tty = TtyServer::new(Some(&stdin_fd))?;
 
         let mut cmd = Command::new(&self.cmd);
@@ -73,18 +71,18 @@ impl Runny {
             cmd.current_dir(wd);
         }
 
+        let signal = chan_signal::notify(&[Signal::WINCH]);
+        let proxy = match tty.new_client(stdin_fd, Some(signal)) {
+            Ok(p) => p,
+            Err(e) => panic!("Error TTY client: {}", e),
+        };
+
         // Spawn a child.  Since we're doing this with a TtyServer,
         // it will have its own session, and will terminate
-        let child = tty.spawn(cmd)?;
+        let mut child = tty.spawn(cmd)?;
+        thread::spawn(move || proxy.wait());
 
-        let master_raw = FileDesc::new(tty.get_master().as_raw_fd(), true);
-        let master = unsafe { File::from_raw_fd(master_raw.into_raw_fd()) };
-
-        Ok(Running {
-            tty: tty,
-            child: child,
-            master: master,
-        })
+        Ok(Running::Running::new(tty))
     }
 
     fn make_command(cmd: &str) -> Result<Vec<String>, RunnyError> {
@@ -97,24 +95,36 @@ impl Runny {
     }
 }
 
-impl Running {
-    pub fn wait(&mut self) -> io::Result<ExitStatus> {
-        self.child.wait()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, BufRead};
 
     #[test]
     fn launch_ls() {
         let cmd = Runny::new("/bin/ls -l /etc").unwrap();
         // let cmd = Runny::new("tty").unwrap();
-        let mut running = cmd.start().unwrap();
+        let running = cmd.start().unwrap();
         let mut simple_str = String::new();
 
-        running.master.read_to_string(&mut simple_str);
+        running.get_interface().read_to_string(&mut simple_str).unwrap();
         println!("Read string: {}", simple_str);
+    }
+
+    #[test]
+    fn launch_ls_buffered() {
+        let cmd = Runny::new("/bin/ls -l /etc").unwrap();
+        // let cmd = Runny::new("tty").unwrap();
+        let running = cmd.start().unwrap();
+
+        for line in io::BufReader::new(running.get_interface()).lines() {
+            match line {
+                Ok(l) => println!("Read line: [{}]", l),
+                Err(e) => {
+                    println!("Read ERROR: {:?}", e);
+                    break;
+                }
+            }
+        }
     }
 }
