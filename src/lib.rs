@@ -55,12 +55,14 @@ impl Runny {
         })
     }
 
-    pub fn set_directory(&mut self, wd: &str) {
+    pub fn directory(&mut self, wd: &str) -> &mut Runny {
         self.working_directory = Some(wd.to_string());
+        self
     }
 
-    pub fn set_timeout(&mut self, timeout: &Duration) {
+    pub fn timeout(&mut self, timeout: &Duration) -> &mut Runny {
         self.timeout = Some(timeout.clone());
+        self
     }
 
     pub fn start(&self) -> Result<running::Running, RunnyError> {
@@ -165,7 +167,7 @@ mod tests {
         let timeout_secs = 1;
         let mut cmd = Runny::new("/bin/bash -c 'echo -n Hi there; sleep 1000; echo -n Bye there'")
             .unwrap();
-        cmd.set_timeout(&Duration::from_secs(timeout_secs));
+        cmd.timeout(&Duration::from_secs(timeout_secs));
 
         let start_time = Instant::now();
         let mut running = cmd.start().unwrap();
@@ -184,7 +186,7 @@ mod tests {
         let mut cmd = Runny::new("/bin/bash -c 'echo Input:; read foo; echo Got string: \
                                   -$foo-; sleep 1; echo Cool'")
             .unwrap();
-        cmd.set_timeout(&Duration::from_secs(5));
+        cmd.timeout(&Duration::from_secs(5));
         let mut running = cmd.start().unwrap();
 
         running.write("bar\n".as_bytes()).unwrap();
