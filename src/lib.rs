@@ -128,10 +128,10 @@ mod tests {
 
     #[test]
     fn test_multi_lines() {
-        let running = Runny::new("/usr/bin/seq 1 5").start().unwrap();
+        let mut running = Runny::new("/usr/bin/seq 1 5").start().unwrap();
 
         let mut vec = vec![];
-        for line in io::BufReader::new(running).lines() {
+        for line in io::BufReader::new(running.take_output()).lines() {
             vec.push(line.unwrap());
         }
         assert_eq!(vec.len(), 5);
@@ -181,11 +181,12 @@ mod tests {
             .timeout(&Duration::from_secs(5))
             .start()
             .unwrap();
-
-        running.write("bar\n".as_bytes()).unwrap();
+        let mut input = running.take_input();
+        let mut output = running.take_output();
+        writeln!(input, "bar").unwrap();
 
         let mut result = String::new();
-        running.read_to_string(&mut result).unwrap();
+        output.read_to_string(&mut result).unwrap();
         println!("String: [{:?}]", result);
 
         running.terminate(None).unwrap();

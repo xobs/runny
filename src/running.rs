@@ -14,23 +14,32 @@ use std::time::Duration;
 use std::result;
 use std::sync::{Arc, Mutex, Condvar};
 
+pub struct RunningWaiter {
+    result: Arc<(Mutex<Option<i32>>, Condvar)>,
+    term_thr: Arc<Mutex<JoinHandle<()>>>,
+    term_delay: Arc<Mutex<Option<Duration>>>,
+}
+
+pub struct RunningOutput {
+    stream: File,
+}
+
+pub struct RunningInput {
+    stream: File,
+}
+
 // We must not drop "tty" until the process exits,
 // however we never actually /use/ tty.
 #[allow(dead_code)]
 pub struct Running {
     tty: TtyServer,
     child_pid: i32,
-    stream: File,
+    input: Option<RunningInput>,
+    output: Option<RunningOutput>,
     term_thr: Arc<Mutex<JoinHandle<()>>>,
     term_delay: Arc<Mutex<Option<Duration>>>,
     wait_thr: JoinHandle<()>,
     result: Arc<(Mutex<Option<i32>>, Condvar)>,
-}
-
-pub struct RunningWaiter {
-    result: Arc<(Mutex<Option<i32>>, Condvar)>,
-    term_thr: Arc<Mutex<JoinHandle<()>>>,
-    term_delay: Arc<Mutex<Option<Duration>>>,
 }
 
 pub enum RunningError {
@@ -59,9 +68,17 @@ impl fmt::Debug for RunningError {
     }
 }
 
+impl fmt::Debug for Running {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Running {}: {:?}", self.child_pid, self.result)
+    }
+}
+
 impl Running {
     pub fn new(tty: TtyServer, mut child: Child, timeout: Option<Duration>) -> Running {
-        let file = unsafe { File::from_raw_fd(tty.get_master().as_raw_fd()) };
+        let input = unsafe { File::from_raw_fd(tty.get_master().as_raw_fd()) };
+        let output = unsafe { File::from_raw_fd(tty.get_master().as_raw_fd()) };
+
         let child_pid = child.id() as i32;
         let child_result = Arc::new((Mutex::new(None), Condvar::new()));
         let child_result_thr = child_result.clone();
@@ -117,11 +134,31 @@ impl Running {
             tty: tty,
             child_pid: child_pid,
             term_delay: term_delay,
-            stream: file,
+            input: Some(RunningInput { stream: input }),
+            output: Some(RunningOutput { stream: output }),
             term_thr: term_thr,
             wait_thr: wait_thr,
             result: child_result,
         }
+    }
+
+    pub fn take_output(&mut self) -> RunningOutput {
+        let value = self.output.take();
+        value.unwrap()
+    }
+
+    pub fn output(&self) -> &Option<RunningOutput> {
+        // Unwrap, because it's bad if we get output after it's taken
+        &self.output
+    }
+
+    pub fn take_input(&mut self) -> RunningInput {
+        let stream = self.input.take();
+        stream.unwrap()
+    }
+
+    pub fn input(&self) -> &Option<RunningInput> {
+        &self.input
     }
 
     pub fn wait(&mut self) -> result::Result<i32, RunningError> {
@@ -167,16 +204,17 @@ impl Running {
         // being terminated.
         self.wait()
     }
-
-    pub fn get_interface(&self) -> &File {
-        // let master_raw = FileDesc::new(self.tty.get_master().as_raw_fd(), true);
-        &self.stream
-    }
 }
+
 
 impl Read for Running {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        match self.stream.read(buf) {
+        let mut output = match self.output {
+            Some(ref mut s) => s,
+            None => return Err(io::Error::from_raw_os_error(9 /* EBADF */)),
+        };
+
+        match output.read(buf) {
             Err(e) => {
                 match e.raw_os_error() {
                     Some(5) => Ok(0),
@@ -190,11 +228,19 @@ impl Read for Running {
 
 impl Write for Running {
     fn write(&mut self, buf: &[u8]) -> Result<usize> {
-        self.stream.write(buf)
+        let mut input = match self.input {
+            Some(ref mut s) => s,
+            None => return Err(io::Error::from_raw_os_error(9 /* EBADF */)),
+        };
+        input.write(buf)
     }
 
     fn flush(&mut self) -> Result<()> {
-        self.stream.flush()
+        let mut input = match self.input {
+            Some(ref mut s) => s,
+            None => return Err(io::Error::from_raw_os_error(9 /* EBADF */)),
+        };
+        input.flush()
     }
 }
 
@@ -202,6 +248,30 @@ impl Drop for Running {
     fn drop(&mut self) {
         // Terminate immediately
         self.terminate(None).ok();
+    }
+}
+
+impl Read for RunningOutput {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        match self.stream.read(buf) {
+            Err(e) => {
+                match e.raw_os_error() {
+                    Some(5) => Ok(0),
+                    _ => Err(e),
+                }
+            }
+            Ok(n) => Ok(n),
+        }
+    }
+}
+
+impl Write for RunningInput {
+    fn write(&mut self, buf: &[u8]) -> Result<usize> {
+        self.stream.write(buf)
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        self.stream.flush()
     }
 }
 
