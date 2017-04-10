@@ -21,14 +21,16 @@ pub struct Running {
     tty: TtyServer,
     child_pid: i32,
     stream: File,
-    term_thr: JoinHandle<()>,
-    wait_thr: JoinHandle<()>,
+    term_thr: Arc<Mutex<JoinHandle<()>>>,
     term_delay: Arc<Mutex<Option<Duration>>>,
+    wait_thr: JoinHandle<()>,
     result: Arc<(Mutex<Option<i32>>, Condvar)>,
 }
 
 pub struct RunningWaiter {
     result: Arc<(Mutex<Option<i32>>, Condvar)>,
+    term_thr: Arc<Mutex<JoinHandle<()>>>,
+    term_delay: Arc<Mutex<Option<Duration>>>,
 }
 
 pub enum RunningError {
@@ -66,7 +68,7 @@ impl Running {
         let term_delay: Arc<Mutex<Option<Duration>>> = Arc::new(Mutex::new(None));
         let term_delay_thr = term_delay.clone();
 
-        let term_thr = thread::spawn(move || {
+        let term_thr = Arc::new(Mutex::new(thread::spawn(move || {
 
             // Allow the child process to run for a given amount of time,
             // or until we're woken up by a termination process.
@@ -86,7 +88,7 @@ impl Running {
 
             // Send a SIGKILL to all children, to ensure they're gone.
             kill(-child_pid, SIGKILL).ok();
-        });
+        })));
 
         // This thread just does a wait() on the child, and stores the result
         // in a variable.
@@ -135,7 +137,11 @@ impl Running {
     }
 
     pub fn waiter(&self) -> RunningWaiter {
-        RunningWaiter { result: self.result.clone() }
+        RunningWaiter {
+            result: self.result.clone(),
+            term_thr: self.term_thr.clone(),
+            term_delay: self.term_delay.clone(),
+        }
     }
 
     pub fn result(&mut self) -> i32 {
@@ -155,7 +161,7 @@ impl Running {
 
         // Set up the delay, then wake up the termination thread.
         *self.term_delay.lock().unwrap() = timeout;
-        self.term_thr.thread().unpark();
+        self.term_thr.lock().unwrap().thread().unpark();
 
         // Hand execution off to self.wait(), which shouldn't block now that the process is
         // being terminated.
@@ -212,5 +218,10 @@ impl RunningWaiter {
             ret = cvar.wait(ret).unwrap();
         }
         ret.unwrap()
+    }
+
+    pub fn terminate(&self, timeout: &Option<Duration>) {
+        *self.term_delay.lock().unwrap() = *timeout;
+        self.term_thr.lock().unwrap().thread().unpark();
     }
 }
