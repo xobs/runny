@@ -20,9 +20,10 @@ use std::sync::{Arc, Mutex};
 #[allow(dead_code)]
 pub struct Running {
     tty: TtyServer,
-    child: Child,
+    child_pid: i32,
     stream: File,
-    timeout_thread: Option<JoinHandle<()>>,
+    thr: JoinHandle<()>,
+    term_delay: Arc<Mutex<Option<Duration>>>,
     result: Arc<Mutex<Option<i32>>>,
 }
 
@@ -58,62 +59,84 @@ impl fmt::Debug for RunningError {
 }
 
 impl Running {
-    pub fn new(tty: TtyServer, child: Child, timeout: Option<Duration>) -> Running {
+    pub fn new(tty: TtyServer, mut child: Child, timeout: Option<Duration>) -> Running {
         let file = unsafe { File::from_raw_fd(tty.get_master().as_raw_fd()) };
-        let id = child.id() as i32;
+        let child_pid = child.id() as i32;
+        let child_result = Arc::new(Mutex::new(None));
+        let child_result_thr = child_result.clone();
+        let term_delay: Arc<Mutex<Option<Duration>>> = Arc::new(Mutex::new(None));
+        let term_delay_thr = term_delay.clone();
 
-        let exited = Arc::new(Mutex::new(false));
-        let exited_thr = exited.clone();
+        let thr = thread::spawn(move || {
 
-        let thr = if let Some(t) = timeout {
-            Some(thread::spawn(move || {
+            // Allow the child process to run for a given amount of time,
+            // or until we're woken up by a termination process.
+            if let Some(t) = timeout {
                 thread::park_timeout(t);
-                if *exited_thr.lock().unwrap() == true {
-                    return;
-                }
-                if kill(-id, SIGTERM).is_err() {
-                    *exited_thr.lock().unwrap() = true;
-                    return;
-                }
+            } else {
+                thread::park();
+            }
 
-                thread::park_timeout(Duration::from_secs(5));
-                if *exited_thr.lock().unwrap() == true {
-                    return;
+            // We've been woken up, so it's time to terminate the child process.
+            // Use a negative value to terminate all children in the process group.
+            kill(-child_pid, SIGTERM).ok();
+
+            if let Some(t) = *term_delay_thr.lock().unwrap() {
+                thread::park_timeout(t);
+            }
+
+            // Send a SIGKILL to all children, to ensure they're gone.
+            kill(-child_pid, SIGKILL).ok();
+        });
+
+        // This thread just does a wait() on the child, and stores the result
+        // in a variable.
+        let wait_thread = thread::spawn(move || {
+            // Finally, get the return code of the process.
+            // println!("Waiting on child...");
+            let result = match child.wait() {
+                Err(e) => {
+                    println!("Got an error: {:?}", e);
+                    Some(-1)
                 }
-                kill(-id, SIGKILL).ok();
-                *exited_thr.lock().unwrap() = true;
-            }))
-        } else {
-            None
-        };
+                Ok(o) => {
+                    match o.code() {
+                        Some(c) => Some(c),
+                        None => Some(-2),
+                    }
+                }
+            };
+            // println!("Assigning result to child_result");
+            *child_result_thr.lock().unwrap() = result;
+            // println!("Done, returning");
+        });
+
         Running {
             tty: tty,
-            child: child,
+            child_pid: child_pid,
+            term_delay: term_delay,
             stream: file,
-            timeout_thread: thr,
-            result: Arc::new(Mutex::new(None)),
+            thr: thr,
+            result: child_result,
         }
     }
 
     pub fn wait(&mut self) -> result::Result<i32, RunningError> {
         // Convert a None ExitStatus into -1, removing
         // the Option<> from the type chain.
-        match self.child.wait() {
-            Ok(res) => {
-                let val = match res.code() {
-                    Some(r) => r,
-                    None => -1,
-                };
-                (*self.result.lock().unwrap()) = Some(val);
-                Ok(val)
+        println!("Waiting on child with PID {}", self.child_pid);
+        loop {
+            if let Some(ret) = *self.result.lock().unwrap() {
+                return Ok(ret);
             }
-            Err(e) => Err(RunningError::RunningIoError(e)),
+            // waitpid(self.child_pid, None).ok();
+            thread::park_timeout(Duration::from_millis(50));
         }
     }
 
     pub fn waitable(&self) -> RunningWaiter {
         RunningWaiter {
-            pid: self.child.id() as i32,
+            pid: self.child_pid,
             result: self.result.clone(),
         }
     }
@@ -127,41 +150,19 @@ impl Running {
     }
 
     pub fn terminate(&mut self, timeout: Option<Duration>) -> result::Result<i32, RunningError> {
-        let pid = self.child.id() as i32;
+
+        // If there's already a result, then the process has exited already.
         if let Some(res) = *self.result.lock().unwrap() {
             return Ok(res);
         }
 
-        // If there's a timeout, give the process some time to quit before sending a SIGKILL.
-        let result = match timeout {
-            None => {
-                // Eat the error, since there's nothing we can do if it fails.
-                kill(-pid, SIGKILL).ok();
-                self.wait()
-            }
-            Some(t) => {
-                let thr = thread::spawn(move || {
-                    // Send the terminal to -pid, which also sends it to every
-                    // process in the controlling group.
-                    kill(-pid, SIGTERM).ok();
-                    thread::park_timeout(t);
-                    kill(-pid, SIGKILL).ok();
-                });
+        // Set up the delay, then wake up the termination thread.
+        *self.term_delay.lock().unwrap() = timeout;
+        self.thr.thread().unpark();
 
-                // Wait for the child to terminate,
-                let res = self.wait();
-                thr.thread().unpark();
-                res
-            }
-        };
-
-        // If there was a timeout, a timeout_thread will have been created.
-        // Wake it up so that it can terminate.
-        if let Some(ref thr) = self.timeout_thread {
-            thr.thread().unpark();
-        };
-
-        result
+        // Hand execution off to self.wait(), which shouldn't block now that the process is
+        // being terminated.
+        self.wait()
     }
 
     pub fn get_interface(&self) -> &File {
@@ -203,15 +204,19 @@ impl Drop for Running {
 
 impl RunningWaiter {
     pub fn wait(&self) {
-        waitpid(self.pid, None).ok();
+        // waitpid(self.pid, None).ok();
+        self.result();
     }
 
     pub fn result(&self) -> i32 {
         loop {
+            println!("Locking self.result...");
             if let Some(res) = *self.result.lock().unwrap() {
+                println!("Result was {}", res);
                 return res;
             }
-            thread::park_timeout(Duration::from_millis(50));
+            println!("Result was None.  Sleeping.  Zzz...");
+            thread::park_timeout(Duration::from_millis(500));
         }
     }
 }

@@ -128,7 +128,7 @@ mod tests {
 
     #[test]
     fn test_multi_lines() {
-        let mut running = Runny::new("/usr/bin/seq 1 5").start().unwrap();
+        let running = Runny::new("/usr/bin/seq 1 5").start().unwrap();
 
         let mut vec = vec![];
         for line in io::BufReader::new(running).lines() {
@@ -197,4 +197,28 @@ mod tests {
         assert_eq!(Runny::new("/bin/true").start().unwrap().result(), 0);
         assert_ne!(Runny::new("/bin/false").start().unwrap().result(), 0);
     }
+
+    #[test]
+    fn running_waiter_wait() {
+        let cmd = Runny::new("/bin/bash -c 'sleep 2'");
+
+        let start_time = Instant::now();
+        let run = cmd.start().unwrap();
+        let waiter = run.waitable();
+        waiter.wait();
+        let end_time = Instant::now();
+
+        // Give one extra second for timeout, to account for plumbing.
+        assert!(end_time.duration_since(start_time) < Duration::from_secs(3));
+        assert!(end_time.duration_since(start_time) > Duration::from_secs(1));
+    }
+
+    #[test]
+    fn running_waiter_result() {
+        let run = Runny::new("/bin/bash -c 'exit 1'").start().unwrap();
+        let waiter = run.waitable();
+        waiter.wait();
+        assert_eq!(waiter.result(), 1);
+    }
+
 }
