@@ -3,6 +3,7 @@ extern crate nix;
 use tty::TtyServer;
 use self::nix::sys::signal::{SIGTERM, SIGKILL};
 use self::nix::sys::signal::kill;
+use self::nix::sys::wait::waitpid;
 
 use std::process::{Child, ExitStatus};
 use std::io::{self, Read, Result, Write};
@@ -23,6 +24,10 @@ pub struct Running {
     stream: File,
     timeout_thread: Option<JoinHandle<()>>,
     exited: Arc<Mutex<bool>>,
+}
+
+pub struct RunningWaiter {
+    pid: i32,
 }
 
 pub enum RunningError {
@@ -91,6 +96,10 @@ impl Running {
 
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
         self.child.wait()
+    }
+
+    pub fn waitable(&self) -> RunningWaiter {
+        RunningWaiter { pid: self.child.id() as i32 }
     }
 
     pub fn result(&mut self) -> i32 {
@@ -186,5 +195,11 @@ impl Drop for Running {
     fn drop(&mut self) {
         // Terminate immediately
         self.terminate(None).ok();
+    }
+}
+
+impl RunningWaiter {
+    pub fn wait(&self) {
+        waitpid(self.pid, None).ok();
     }
 }
