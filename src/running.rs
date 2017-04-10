@@ -5,7 +5,7 @@ use self::nix::sys::signal::{SIGTERM, SIGKILL};
 use self::nix::sys::signal::kill;
 use self::nix::sys::wait::waitpid;
 
-use std::process::{Child, ExitStatus};
+use std::process::Child;
 use std::io::{self, Read, Result, Write};
 use std::fs::File;
 use std::fmt;
@@ -23,11 +23,12 @@ pub struct Running {
     child: Child,
     stream: File,
     timeout_thread: Option<JoinHandle<()>>,
-    exited: Arc<Mutex<bool>>,
+    result: Arc<Mutex<Option<i32>>>,
 }
 
 pub struct RunningWaiter {
     pid: i32,
+    result: Arc<Mutex<Option<i32>>>,
 }
 
 pub enum RunningError {
@@ -90,52 +91,53 @@ impl Running {
             child: child,
             stream: file,
             timeout_thread: thr,
-            exited: Arc::new(Mutex::new(false)),
+            result: Arc::new(Mutex::new(None)),
         }
     }
 
-    pub fn wait(&mut self) -> io::Result<ExitStatus> {
-        self.child.wait()
+    pub fn wait(&mut self) -> result::Result<i32, RunningError> {
+        // Convert a None ExitStatus into -1, removing
+        // the Option<> from the type chain.
+        match self.child.wait() {
+            Ok(res) => {
+                let val = match res.code() {
+                    Some(r) => r,
+                    None => -1,
+                };
+                (*self.result.lock().unwrap()) = Some(val);
+                Ok(val)
+            }
+            Err(e) => Err(RunningError::RunningIoError(e)),
+        }
     }
 
     pub fn waitable(&self) -> RunningWaiter {
-        RunningWaiter { pid: self.child.id() as i32 }
-    }
-
-    pub fn result(&mut self) -> i32 {
-        match self.child.wait() {
-            Ok(status) => {
-                match status.code() {
-                    Some(s) => s,
-                    None => -1,
-                }
-            }
-            Err(_) => -1,
+        RunningWaiter {
+            pid: self.child.id() as i32,
+            result: self.result.clone(),
         }
     }
 
-    pub fn terminate(&mut self, timeout: Option<Duration>) -> result::Result<(), RunningError> {
+    pub fn result(&mut self) -> i32 {
+        self.wait().unwrap();
+
+        // We can unwrap here, because wait() should always set Some
+        // value, and if not it's a bad bug anyway.
+        self.result.lock().unwrap().unwrap()
+    }
+
+    pub fn terminate(&mut self, timeout: Option<Duration>) -> result::Result<i32, RunningError> {
         let pid = self.child.id() as i32;
-        if *self.exited.lock().unwrap() == true {
-            return Ok(());
+        if let Some(res) = *self.result.lock().unwrap() {
+            return Ok(res);
         }
 
         // If there's a timeout, give the process some time to quit before sending a SIGKILL.
         let result = match timeout {
             None => {
-                let ret = match kill(-pid, SIGKILL) {
-                    Ok(_) => Ok(()),
-                    Err(e) => {
-                        // Unix will generate an ESRCH error if the process has already exited.
-                        if e == nix::Error::from_errno(nix::Errno::ESRCH) {
-                            Ok(())
-                        } else {
-                            Err(RunningError::RunningNixError(e))
-                        }
-                    }
-                };
-                self.child.wait().ok();
-                ret
+                // Eat the error, since there's nothing we can do if it fails.
+                kill(-pid, SIGKILL).ok();
+                self.wait()
             }
             Some(t) => {
                 let thr = thread::spawn(move || {
@@ -147,13 +149,14 @@ impl Running {
                 });
 
                 // Wait for the child to terminate,
-                self.child.wait().ok();
+                let res = self.wait();
                 thr.thread().unpark();
-                Ok(())
+                res
             }
         };
-        *self.exited.lock().unwrap() = true;
 
+        // If there was a timeout, a timeout_thread will have been created.
+        // Wake it up so that it can terminate.
         if let Some(ref thr) = self.timeout_thread {
             thr.thread().unpark();
         };
@@ -201,5 +204,14 @@ impl Drop for Running {
 impl RunningWaiter {
     pub fn wait(&self) {
         waitpid(self.pid, None).ok();
+    }
+
+    pub fn result(&self) -> i32 {
+        loop {
+            if let Some(res) = *self.result.lock().unwrap() {
+                return res;
+            }
+            thread::park_timeout(Duration::from_millis(50));
+        }
     }
 }
