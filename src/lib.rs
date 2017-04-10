@@ -1,6 +1,4 @@
 extern crate tty;
-extern crate chan_signal;
-extern crate libc;
 extern crate shlex;
 extern crate termios;
 
@@ -17,7 +15,6 @@ pub mod running;
 
 pub struct Runny {
     cmd: String,
-    args: Vec<String>,
     working_directory: Option<String>,
     timeout: Option<Duration>,
 }
@@ -43,20 +40,16 @@ impl From<std::io::Error> for RunnyError {
 }
 
 impl Runny {
-    pub fn new(cmd: &str) -> Result<Runny, RunnyError> {
-        let mut args = Self::make_command(cmd)?;
-        let cmd = args.remove(0);
-
-        Ok(Runny {
-            cmd: cmd,
-            args: args,
+    pub fn new(cmd: &str) -> Runny {
+        Runny {
+            cmd: cmd.to_string(),
             working_directory: None,
             timeout: None,
-        })
+        }
     }
 
-    pub fn directory(&mut self, wd: &str) -> &mut Runny {
-        self.working_directory = Some(wd.to_string());
+    pub fn directory(&mut self, wd: &Option<String>) -> &mut Runny {
+        self.working_directory = wd.clone();
         self
     }
 
@@ -67,14 +60,16 @@ impl Runny {
 
     pub fn start(&self) -> Result<running::Running, RunnyError> {
 
+        let mut args = Self::make_command(self.cmd.as_str())?;
+        let cmd = args.remove(0);
+
         // Create a new session, tied to stdin (FD number 0)
         // let stdin_fd = tty::FileDesc::new(0 as i32, false);
         // let mut tty = TtyServer::new(Some(&stdin_fd))?;
         let mut tty = TtyServer::new::<tty::FileDesc>(None)?;
 
-        let mut cmd = Command::new(&self.cmd);
-        cmd.env_clear()
-            .args(self.args.as_slice());
+        let mut cmd = Command::new(&cmd);
+        cmd.env_clear().args(args.as_slice());
         if let Some(ref wd) = self.working_directory {
             cmd.current_dir(wd);
         }
@@ -122,8 +117,9 @@ mod tests {
 
     #[test]
     fn launch_echo() {
-        let cmd = Runny::new("/bin/echo -n 'Launch test echo works'").unwrap();
-        let mut running = cmd.start().unwrap();
+        // let cmd = Runny::new("/bin/echo -n 'Launch test echo works'").unwrap();
+        // let mut running = cmd.start().unwrap();
+        let mut running = Runny::new("/bin/echo -n 'Launch test echo works'").start().unwrap();
         let mut simple_str = String::new();
 
         running.read_to_string(&mut simple_str).unwrap();
@@ -132,8 +128,7 @@ mod tests {
 
     #[test]
     fn test_multi_lines() {
-        let cmd = Runny::new("/usr/bin/seq 1 5").unwrap();
-        let running = cmd.start().unwrap();
+        let mut running = Runny::new("/usr/bin/seq 1 5").start().unwrap();
 
         let mut vec = vec![];
         for line in io::BufReader::new(running).lines() {
@@ -148,8 +143,7 @@ mod tests {
     fn terminate_works() {
         let timeout_secs = 5;
 
-        let cmd = Runny::new("/bin/bash -c 'sleep 1000'").unwrap();
-        let mut running = cmd.start().unwrap();
+        let mut running = Runny::new("/bin/bash -c 'sleep 1000'").start().unwrap();
 
         let mut s = String::new();
         let start_time = Instant::now();
@@ -165,8 +159,7 @@ mod tests {
     #[test]
     fn timeout_works() {
         let timeout_secs = 1;
-        let mut cmd = Runny::new("/bin/bash -c 'echo -n Hi there; sleep 1000; echo -n Bye there'")
-            .unwrap();
+        let mut cmd = Runny::new("/bin/bash -c 'echo -n Hi there; sleep 1000; echo -n Bye there'");
         cmd.timeout(&Duration::from_secs(timeout_secs));
 
         let start_time = Instant::now();
@@ -183,11 +176,11 @@ mod tests {
 
     #[test]
     fn read_write() {
-        let mut cmd = Runny::new("/bin/bash -c 'echo Input:; read foo; echo Got string: \
+        let mut running = Runny::new("/bin/bash -c 'echo Input:; read foo; echo Got string: \
                                   -$foo-; sleep 1; echo Cool'")
+            .timeout(&Duration::from_secs(5))
+            .start()
             .unwrap();
-        cmd.timeout(&Duration::from_secs(5));
-        let mut running = cmd.start().unwrap();
 
         running.write("bar\n".as_bytes()).unwrap();
 
@@ -201,10 +194,7 @@ mod tests {
 
     #[test]
     fn exit_codes() {
-        let cmd = Runny::new("/bin/true").unwrap();
-        assert_eq!(cmd.start().unwrap().result(), 0);
-
-        let cmd = Runny::new("/bin/false").unwrap();
-        assert_ne!(cmd.start().unwrap().result(), 0);
+        assert_eq!(Runny::new("/bin/true").start().unwrap().result(), 0);
+        assert_ne!(Runny::new("/bin/false").start().unwrap().result(), 0);
     }
 }
