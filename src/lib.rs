@@ -1,15 +1,18 @@
 extern crate tty;
 extern crate shlex;
 extern crate termios;
+extern crate nix;
 
 use termios::{Termios, tcsetattr};
 use tty::TtyServer;
+use nix::unistd::setsid;
 
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
 use std::io;
 use std::fmt;
 use std::time::Duration;
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
+use std::os::unix::process::CommandExt;
 
 pub mod running;
 
@@ -58,6 +61,26 @@ impl Runny {
         self
     }
 
+    /// Spawn a new process connected to the slave TTY
+    fn spawn(&self, tty: &mut TtyServer, mut cmd: Command) -> io::Result<Child> {
+        match tty.take_slave() {
+            Some(slave) => {
+                // Force new session
+                // TODO: tcsetpgrp
+                cmd.stdin(unsafe { Stdio::from_raw_fd(slave.as_raw_fd()) }).
+                    stdout(unsafe { Stdio::from_raw_fd(slave.as_raw_fd()) }).
+                    // Must close the slave FD to not wait indefinitely the end of the proxy
+                    stderr(unsafe { Stdio::from_raw_fd(slave.into_raw_fd()) }).
+                    // Don't check the error of setsid because it fails if we're the
+                    // process leader already. We just forked so it shouldn't return
+                    // error, but ignore it anyway.
+                    before_exec(|| { setsid().ok(); Ok(()) }).
+                    spawn()
+            }
+            None => Err(io::Error::new(io::ErrorKind::BrokenPipe, "No TTY slave")),
+        }
+    }
+
     pub fn start(&self) -> Result<running::Running, RunnyError> {
 
         let mut args = Self::make_command(self.cmd.as_str())?;
@@ -93,8 +116,7 @@ impl Runny {
 
         // Spawn a child.  Since we're doing this with a TtyServer,
         // it will have its own session, and will terminate
-        let child = tty.spawn(cmd)?;
-        // thread::spawn(move || proxy.wait());
+        let child = self.spawn(&mut tty, cmd)?;
 
         Ok(running::Running::new(tty, child, self.timeout))
     }
