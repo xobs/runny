@@ -3,7 +3,6 @@ extern crate nix;
 use tty::TtyServer;
 use self::nix::sys::signal::{SIGTERM, SIGKILL};
 use self::nix::sys::signal::kill;
-use self::nix::sys::wait::waitpid;
 
 use std::process::Child;
 use std::io::{self, Read, Result, Write};
@@ -13,7 +12,7 @@ use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use std::result;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Condvar};
 
 // We must not drop "tty" until the process exits,
 // however we never actually /use/ tty.
@@ -22,14 +21,14 @@ pub struct Running {
     tty: TtyServer,
     child_pid: i32,
     stream: File,
-    thr: JoinHandle<()>,
+    term_thr: JoinHandle<()>,
+    wait_thr: JoinHandle<()>,
     term_delay: Arc<Mutex<Option<Duration>>>,
-    result: Arc<Mutex<Option<i32>>>,
+    result: Arc<(Mutex<Option<i32>>, Condvar)>,
 }
 
 pub struct RunningWaiter {
-    pid: i32,
-    result: Arc<Mutex<Option<i32>>>,
+    result: Arc<(Mutex<Option<i32>>, Condvar)>,
 }
 
 pub enum RunningError {
@@ -62,12 +61,12 @@ impl Running {
     pub fn new(tty: TtyServer, mut child: Child, timeout: Option<Duration>) -> Running {
         let file = unsafe { File::from_raw_fd(tty.get_master().as_raw_fd()) };
         let child_pid = child.id() as i32;
-        let child_result = Arc::new(Mutex::new(None));
+        let child_result = Arc::new((Mutex::new(None), Condvar::new()));
         let child_result_thr = child_result.clone();
         let term_delay: Arc<Mutex<Option<Duration>>> = Arc::new(Mutex::new(None));
         let term_delay_thr = term_delay.clone();
 
-        let thr = thread::spawn(move || {
+        let term_thr = thread::spawn(move || {
 
             // Allow the child process to run for a given amount of time,
             // or until we're woken up by a termination process.
@@ -91,7 +90,7 @@ impl Running {
 
         // This thread just does a wait() on the child, and stores the result
         // in a variable.
-        let wait_thread = thread::spawn(move || {
+        let wait_thr = thread::spawn(move || {
             // Finally, get the return code of the process.
             // println!("Waiting on child...");
             let result = match child.wait() {
@@ -106,9 +105,10 @@ impl Running {
                     }
                 }
             };
-            // println!("Assigning result to child_result");
-            *child_result_thr.lock().unwrap() = result;
-            // println!("Done, returning");
+            let &(ref lock, ref cvar) = &*child_result_thr;
+            let mut child_result = lock.lock().unwrap();
+            *child_result = result;
+            cvar.notify_all();
         });
 
         Running {
@@ -116,7 +116,8 @@ impl Running {
             child_pid: child_pid,
             term_delay: term_delay,
             stream: file,
-            thr: thr,
+            term_thr: term_thr,
+            wait_thr: wait_thr,
             result: child_result,
         }
     }
@@ -125,20 +126,16 @@ impl Running {
         // Convert a None ExitStatus into -1, removing
         // the Option<> from the type chain.
         println!("Waiting on child with PID {}", self.child_pid);
-        loop {
-            if let Some(ret) = *self.result.lock().unwrap() {
-                return Ok(ret);
-            }
-            // waitpid(self.child_pid, None).ok();
-            thread::park_timeout(Duration::from_millis(50));
+        let &(ref lock, ref cvar) = &*self.result;
+        let mut ret = lock.lock().unwrap();
+        while ret.is_none() {
+            ret = cvar.wait(ret).unwrap();
         }
+        Ok(ret.unwrap())
     }
 
     pub fn waitable(&self) -> RunningWaiter {
-        RunningWaiter {
-            pid: self.child_pid,
-            result: self.result.clone(),
-        }
+        RunningWaiter { result: self.result.clone() }
     }
 
     pub fn result(&mut self) -> i32 {
@@ -146,19 +143,19 @@ impl Running {
 
         // We can unwrap here, because wait() should always set Some
         // value, and if not it's a bad bug anyway.
-        self.result.lock().unwrap().unwrap()
+        self.result.0.lock().unwrap().unwrap()
     }
 
     pub fn terminate(&mut self, timeout: Option<Duration>) -> result::Result<i32, RunningError> {
 
         // If there's already a result, then the process has exited already.
-        if let Some(res) = *self.result.lock().unwrap() {
+        if let Some(res) = *self.result.0.lock().unwrap() {
             return Ok(res);
         }
 
         // Set up the delay, then wake up the termination thread.
         *self.term_delay.lock().unwrap() = timeout;
-        self.thr.thread().unpark();
+        self.term_thr.thread().unpark();
 
         // Hand execution off to self.wait(), which shouldn't block now that the process is
         // being terminated.
@@ -209,14 +206,11 @@ impl RunningWaiter {
     }
 
     pub fn result(&self) -> i32 {
-        loop {
-            println!("Locking self.result...");
-            if let Some(res) = *self.result.lock().unwrap() {
-                println!("Result was {}", res);
-                return res;
-            }
-            println!("Result was None.  Sleeping.  Zzz...");
-            thread::park_timeout(Duration::from_millis(500));
+        let &(ref lock, ref cvar) = &*self.result;
+        let mut ret = lock.lock().unwrap();
+        while ret.is_none() {
+            ret = cvar.wait(ret).unwrap();
         }
+        ret.unwrap()
     }
 }
