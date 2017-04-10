@@ -134,7 +134,7 @@ impl Running {
         Ok(ret.unwrap())
     }
 
-    pub fn waitable(&self) -> RunningWaiter {
+    pub fn waiter(&self) -> RunningWaiter {
         RunningWaiter { result: self.result.clone() }
     }
 

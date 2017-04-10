@@ -204,7 +204,7 @@ mod tests {
 
         let start_time = Instant::now();
         let run = cmd.start().unwrap();
-        let waiter = run.waitable();
+        let waiter = run.waiter();
         waiter.wait();
         let end_time = Instant::now();
 
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn running_waiter_result() {
         let run = Runny::new("/bin/bash -c 'exit 1'").start().unwrap();
-        let waiter = run.waitable();
+        let waiter = run.waiter();
         waiter.wait();
         assert_eq!(waiter.result(), 1);
     }
