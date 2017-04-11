@@ -219,18 +219,33 @@ impl Running {
 
         // We can unwrap here, because wait() should always set Some
         // value, and if not it's a bad bug anyway.
-        self.result.0.lock().unwrap().unwrap()
+
+        let &(ref lock, ref cvar) = &*self.result;
+        let mut ret = lock.lock().unwrap();
+        while ret.is_none() {
+            ret = cvar.wait(ret).unwrap();
+        }
+        ret.unwrap()
     }
 
     pub fn terminate(&mut self, timeout: Option<Duration>) -> result::Result<i32, RunningError> {
 
         // If there's already a result, then the process has exited already.
-        if let Some(res) = *self.result.0.lock().unwrap() {
-            return Ok(res);
+        {
+            let &(ref lock, _) = &*self.result;
+            let ret = lock.try_lock();
+            if let Ok(ref unlocked) = ret {
+                if let Some(retval) = **unlocked {
+                    return Ok(retval);
+                }
+            }
         }
 
         // Set up the delay, then wake up the termination thread.
-        *self.term_delay.lock().unwrap() = timeout;
+        if let Ok(ref mut delay) = self.term_delay.try_lock() {
+            **delay = timeout;
+        }
+
         self.term_thr.lock().unwrap().thread().unpark();
 
         // Hand execution off to self.wait(), which shouldn't block now that the process is
@@ -324,7 +339,11 @@ impl RunningWaiter {
     }
 
     pub fn terminate(&self, timeout: &Option<Duration>) {
-        *self.term_delay.lock().unwrap() = *timeout;
+        let mut lock = self.term_delay.try_lock();
+        if let Ok(ref mut delay) = lock {
+            **delay = *timeout;
+        }
+        drop(lock);
         self.term_thr.lock().unwrap().thread().unpark();
     }
 }
