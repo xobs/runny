@@ -281,4 +281,11 @@ mod tests {
             assert_ne!(runny.start().unwrap().result(), 0);
         }
     }
+
+    #[test]
+    fn invalid_command() {
+        let runny = Runny::new("/bin/does/not/exist");
+        let running = runny.start();
+        assert!(running.is_err());
+    }
 }
