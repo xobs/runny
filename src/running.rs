@@ -126,13 +126,11 @@ impl Running {
         // in a variable.
         let wait_thr = thread::spawn(move || {
             // Finally, get the return code of the process.
-            // println!("Waiting on child...");
             let &(ref lock, ref cvar) = &*child_result_thr;
             let mut child_result = lock.lock().unwrap();
 
             let result = match child.wait() {
-                Err(e) => {
-                    println!("Got an error: {:?}", e);
+                Err(_) => {
                     Some(-1)
                 }
                 Ok(o) => {
@@ -148,10 +146,7 @@ impl Running {
 
         let stderr = match handles.remove("stderr") {
             Some(s) => Some(RunningOutput { stream: s }),
-            None => {
-                // println!("No stderr found");
-                None
-            }
+            None => panic!("No stderr found"),
         };
 
         Running {
@@ -197,7 +192,6 @@ impl Running {
     pub fn wait(&mut self) -> result::Result<i32, RunningError> {
         // Convert a None ExitStatus into -1, removing
         // the Option<> from the type chain.
-        // println!("Waiting on child with PID {}", self.child_pid);
         let &(ref lock, ref cvar) = &*self.result;
         let mut ret = lock.lock().unwrap();
         while ret.is_none() {
