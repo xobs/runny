@@ -133,7 +133,7 @@ impl Runny {
         // Spawn a child.  Since we're doing this with a TtyServer,
         // it will have its own session, and will terminate
         // let child = self.spawn(&mut tty, cmd, &mut handles).unwrap();
-        let child = self.spawn(cmd, pty.slave, &mut handles).unwrap();
+        let child = self.spawn(cmd, pty.slave, &mut handles)?;
 
         Ok(running::Running::new(child, pty.master, self.timeout, handles))
     }
