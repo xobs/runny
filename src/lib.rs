@@ -2,17 +2,22 @@ extern crate tty;
 extern crate shlex;
 extern crate termios;
 extern crate nix;
+extern crate fd;
 
+use fd::Pipe;
 use termios::{Termios, tcsetattr};
-use tty::TtyServer;
+use tty::FileDesc;
+use tty::ffi::openpty;
 use nix::unistd::setsid;
 
 use std::process::{Child, Command, Stdio};
 use std::io;
 use std::fmt;
+use std::fs::File;
 use std::time::Duration;
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
 use std::os::unix::process::CommandExt;
+use std::collections::HashMap;
 
 pub mod running;
 
@@ -62,34 +67,47 @@ impl Runny {
     }
 
     /// Spawn a new process connected to the slave TTY
-    fn spawn(&self, tty: &mut TtyServer, mut cmd: Command) -> io::Result<Child> {
-        match tty.take_slave() {
-            Some(slave) => {
-                // Force new session
-                // TODO: tcsetpgrp
-                cmd.stdin(unsafe { Stdio::from_raw_fd(slave.as_raw_fd()) }).
-                    stdout(unsafe { Stdio::from_raw_fd(slave.as_raw_fd()) }).
-                    // Must close the slave FD to not wait indefinitely the end of the proxy
-                    stderr(unsafe { Stdio::from_raw_fd(slave.into_raw_fd()) }).
-                    // Don't check the error of setsid because it fails if we're the
-                    // process leader already. We just forked so it shouldn't return
-                    // error, but ignore it anyway.
-                    before_exec(|| { setsid().ok(); Ok(()) }).
-                    spawn()
-            }
-            None => Err(io::Error::new(io::ErrorKind::BrokenPipe, "No TTY slave")),
-        }
+    fn spawn(&self,
+             mut cmd: Command,
+             slave: File,
+             handles: &mut HashMap<String, File>)
+             -> io::Result<Child> {
+
+        // When reading from the pty, sometimes we get -EIO or -EBADF,
+        // which can be ignored.  But Rust really doesn't like this.
+        // So send the pty through a pipe, and ignore those errors.
+        //
+        let (stderr_tx, stderr_rx) = match Pipe::new() {
+            Ok(p) => (p.writer, p.reader),
+            Err(e) => panic!("Unable to make new pipe: {:?}", e),//return Err(e),
+        };
+
+        handles.insert("stderr".to_string(), stderr_rx);
+
+        let slave_fd = FileDesc::new(slave.into_raw_fd(), false);
+        let stdin = unsafe { Stdio::from_raw_fd(slave_fd.dup().unwrap().as_raw_fd()) };
+        let stdout = unsafe { Stdio::from_raw_fd(slave_fd.as_raw_fd()) };
+        let stderr = unsafe { Stdio::from_raw_fd(stderr_tx.into_raw_fd()) };
+
+        let child = cmd.stdin(stdin).
+                        stdout(stdout).
+                        // Must close the slave FD to not wait indefinitely the end of the proxy
+                        stderr(stderr).
+                        // Don't check the error of setsid because it fails if we're the
+                        // process leader already. We just forked so it shouldn't return
+                        // error, but ignore it anyway.
+                        before_exec(|| { setsid().ok(); Ok(()) }).
+                        spawn();
+        child
     }
 
     pub fn start(&self) -> Result<running::Running, RunnyError> {
 
-        let mut args = Self::make_command(self.cmd.as_str())?;
+        let mut args = Self::make_command(self.cmd.as_str()).unwrap();
         let cmd = args.remove(0);
+        let mut handles = HashMap::new();
 
-        // Create a new session, tied to stdin (FD number 0)
-        // let stdin_fd = tty::FileDesc::new(0 as i32, false);
-        // let mut tty = TtyServer::new(Some(&stdin_fd))?;
-        let mut tty = TtyServer::new::<tty::FileDesc>(None)?;
+        let pty = openpty(None, None)?;
 
         let mut cmd = Command::new(&cmd);
         cmd.env_clear().args(args.as_slice());
@@ -98,7 +116,7 @@ impl Runny {
         }
 
         // Disable character echo.
-        let mut termios_master = Termios::from_fd(tty.get_master().as_raw_fd())?;
+        let mut termios_master = Termios::from_fd(pty.master.as_raw_fd())?;
         termios_master.c_iflag &=
             !(termios::IGNBRK | termios::BRKINT | termios::PARMRK | termios::ISTRIP |
               termios::INLCR | termios::IGNCR | termios::ICRNL | termios::IXON);
@@ -110,15 +128,21 @@ impl Runny {
         termios_master.c_cc[termios::VMIN] = 1;
         termios_master.c_cc[termios::VTIME] = 0;
         // XXX: cfmakeraw
-        tcsetattr(tty.get_master().as_raw_fd(),
-                  termios::TCSANOW,
-                  &termios_master)?;
+        tcsetattr(pty.master.as_raw_fd(), termios::TCSANOW, &termios_master).unwrap();
+
+        println!("Slave fd: {} Master fd: {}  stderr_fd:  {:?} {:?}",
+                 pty.slave.as_raw_fd(),
+                 pty.master.as_raw_fd(),
+                 //       stderr_tx.as_raw_fd(),
+                 pty.path,
+                 cmd);
 
         // Spawn a child.  Since we're doing this with a TtyServer,
         // it will have its own session, and will terminate
-        let child = self.spawn(&mut tty, cmd)?;
+        // let child = self.spawn(&mut tty, cmd, &mut handles).unwrap();
+        let child = self.spawn(cmd, pty.slave, &mut handles).unwrap();
 
-        Ok(running::Running::new(tty, child, self.timeout))
+        Ok(running::Running::new(child, pty.master, self.timeout, handles))
     }
 
     fn make_command(cmd: &str) -> Result<Vec<String>, RunnyError> {
@@ -139,12 +163,11 @@ mod tests {
 
     #[test]
     fn launch_echo() {
-        // let cmd = Runny::new("/bin/echo -n 'Launch test echo works'").unwrap();
-        // let mut running = cmd.start().unwrap();
         let mut running = Runny::new("/bin/echo -n 'Launch test echo works'").start().unwrap();
         let mut simple_str = String::new();
 
         running.read_to_string(&mut simple_str).unwrap();
+        println!("Read string: {}", simple_str);
         assert_eq!(simple_str, "Launch test echo works");
     }
 
@@ -156,6 +179,7 @@ mod tests {
         for line in io::BufReader::new(running.take_output()).lines() {
             vec.push(line.unwrap());
         }
+        println!("Incoming vec: {:?}", vec);
         assert_eq!(vec.len(), 5);
         let vec_parsed: Vec<i32> = vec.iter().map(|x| x.parse().unwrap()).collect();
         assert_eq!(vec_parsed, vec![1, 2, 3, 4, 5]);
@@ -180,7 +204,7 @@ mod tests {
 
     #[test]
     fn timeout_works() {
-        let timeout_secs = 1;
+        let timeout_secs = 3;
         let mut cmd = Runny::new("/bin/bash -c 'echo -n Hi there; sleep 1000; echo -n Bye there'");
         cmd.timeout(&Duration::from_secs(timeout_secs));
 
@@ -190,10 +214,15 @@ mod tests {
         running.read_to_string(&mut s).unwrap();
         let end_time = Instant::now();
 
-        assert_eq!(s, "Hi there");
-
         // Give one extra second for timeout, to account for plumbing.
+        println!("Start time: {:?}  End time: {:?}  Duration: {}",
+                 start_time,
+                 end_time,
+                 timeout_secs);
+        println!("Read string: {}", s);
         assert!(end_time.duration_since(start_time) < Duration::from_secs(timeout_secs + 1));
+        assert!(end_time.duration_since(start_time) > Duration::from_secs(timeout_secs - 1));
+        assert_eq!(s, "Hi there");
     }
 
     #[test]
@@ -209,7 +238,6 @@ mod tests {
 
         let mut result = String::new();
         output.read_to_string(&mut result).unwrap();
-        println!("String: [{:?}]", result);
 
         running.terminate(None).unwrap();
         assert_eq!(result, "Input:\nGot string: -bar-\nCool\n");
@@ -244,4 +272,29 @@ mod tests {
         assert_eq!(waiter.result(), 1);
     }
 
+    #[test]
+    fn read_stderr() {
+        let mut run = Runny::new("/bin/bash -c 'echo -n error-test 1>&2'").start().unwrap();
+        let mut s = String::new();
+        let mut stderr = run.take_error();
+        stderr.read_to_string(&mut s).unwrap();
+        assert_eq!(s, "error-test");
+    }
+
+    #[test]
+    fn many_commands_true() {
+        let runny = Runny::new("/bin/true");
+        for _ in 1..100 {
+            assert_eq!(runny.start().unwrap().result(), 0);
+            println!("/bin/true exited");
+        }
+    }
+    #[test]
+    fn many_commands_false() {
+        let runny = Runny::new("/bin/false");
+        for _ in 1..100 {
+            assert_ne!(runny.start().unwrap().result(), 0);
+            println!("/bin/false exited");
+        }
+    }
 }

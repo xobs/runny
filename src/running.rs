@@ -1,8 +1,9 @@
 extern crate nix;
+extern crate tty;
 
-use tty::TtyServer;
 use self::nix::sys::signal::{SIGTERM, SIGKILL};
 use self::nix::sys::signal::kill;
+use self::tty::FileDesc;
 
 use std::process::Child;
 use std::io::{self, Read, Result, Write};
@@ -13,6 +14,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use std::result;
 use std::sync::{Arc, Mutex, Condvar};
+use std::collections::HashMap;
 
 pub struct RunningWaiter {
     result: Arc<(Mutex<Option<i32>>, Condvar)>,
@@ -32,10 +34,10 @@ pub struct RunningInput {
 // however we never actually /use/ tty.
 #[allow(dead_code)]
 pub struct Running {
-    tty: TtyServer,
     child_pid: i32,
     input: Option<RunningInput>,
     output: Option<RunningOutput>,
+    error: Option<RunningOutput>,
     term_thr: Arc<Mutex<JoinHandle<()>>>,
     term_delay: Arc<Mutex<Option<Duration>>>,
     wait_thr: JoinHandle<()>,
@@ -75,9 +77,22 @@ impl fmt::Debug for Running {
 }
 
 impl Running {
-    pub fn new(tty: TtyServer, mut child: Child, timeout: Option<Duration>) -> Running {
-        let input = unsafe { File::from_raw_fd(tty.get_master().as_raw_fd()) };
-        let output = unsafe { File::from_raw_fd(tty.get_master().as_raw_fd()) };
+    pub fn new(mut child: Child,
+               master: File,
+               timeout: Option<Duration>,
+               mut handles: HashMap<String, File>)
+               -> Running {
+        let input = unsafe {
+            File::from_raw_fd(FileDesc::new(master.as_raw_fd(), false).dup().unwrap().as_raw_fd())
+        };
+        // let output = unsafe { File::from_raw_fd(master.into_raw_fd()) };
+        let output = master;
+
+        // Drop stdin/stdout/stderr on the child, since we access it using
+        // the "master" file instead.
+        drop(child.stdin.take());
+        drop(child.stdout.take());
+        drop(child.stderr.take());
 
         let child_pid = child.id() as i32;
         let child_result = Arc::new((Mutex::new(None), Condvar::new()));
@@ -112,6 +127,9 @@ impl Running {
         let wait_thr = thread::spawn(move || {
             // Finally, get the return code of the process.
             // println!("Waiting on child...");
+            let &(ref lock, ref cvar) = &*child_result_thr;
+            let mut child_result = lock.lock().unwrap();
+
             let result = match child.wait() {
                 Err(e) => {
                     println!("Got an error: {:?}", e);
@@ -124,18 +142,25 @@ impl Running {
                     }
                 }
             };
-            let &(ref lock, ref cvar) = &*child_result_thr;
-            let mut child_result = lock.lock().unwrap();
             *child_result = result;
             cvar.notify_all();
         });
 
+        let stderr = match handles.remove("stderr") {
+            Some(s) => Some(RunningOutput { stream: s }),
+            None => {
+                // println!("No stderr found");
+                None
+            }
+        };
+
         Running {
-            tty: tty,
             child_pid: child_pid,
             term_delay: term_delay,
             input: Some(RunningInput { stream: input }),
+            //output: Some(RunningOutput { stream: master }),
             output: Some(RunningOutput { stream: output }),
+            error: stderr,
             term_thr: term_thr,
             wait_thr: wait_thr,
             result: child_result,
@@ -148,7 +173,6 @@ impl Running {
     }
 
     pub fn output(&self) -> &Option<RunningOutput> {
-        // Unwrap, because it's bad if we get output after it's taken
         &self.output
     }
 
@@ -161,10 +185,19 @@ impl Running {
         &self.input
     }
 
+    pub fn take_error(&mut self) -> RunningOutput {
+        let value = self.error.take();
+        value.unwrap()
+    }
+
+    pub fn error(&self) -> &Option<RunningOutput> {
+        &self.error
+    }
+
     pub fn wait(&mut self) -> result::Result<i32, RunningError> {
         // Convert a None ExitStatus into -1, removing
         // the Option<> from the type chain.
-        println!("Waiting on child with PID {}", self.child_pid);
+        // println!("Waiting on child with PID {}", self.child_pid);
         let &(ref lock, ref cvar) = &*self.result;
         let mut ret = lock.lock().unwrap();
         while ret.is_none() {
