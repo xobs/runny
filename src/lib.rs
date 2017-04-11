@@ -130,13 +130,6 @@ impl Runny {
         // XXX: cfmakeraw
         tcsetattr(pty.master.as_raw_fd(), termios::TCSANOW, &termios_master).unwrap();
 
-        println!("Slave fd: {} Master fd: {}  stderr_fd:  {:?} {:?}",
-                 pty.slave.as_raw_fd(),
-                 pty.master.as_raw_fd(),
-                 //       stderr_tx.as_raw_fd(),
-                 pty.path,
-                 cmd);
-
         // Spawn a child.  Since we're doing this with a TtyServer,
         // it will have its own session, and will terminate
         // let child = self.spawn(&mut tty, cmd, &mut handles).unwrap();
@@ -167,7 +160,6 @@ mod tests {
         let mut simple_str = String::new();
 
         running.read_to_string(&mut simple_str).unwrap();
-        println!("Read string: {}", simple_str);
         assert_eq!(simple_str, "Launch test echo works");
     }
 
@@ -179,7 +171,6 @@ mod tests {
         for line in io::BufReader::new(running.take_output()).lines() {
             vec.push(line.unwrap());
         }
-        println!("Incoming vec: {:?}", vec);
         assert_eq!(vec.len(), 5);
         let vec_parsed: Vec<i32> = vec.iter().map(|x| x.parse().unwrap()).collect();
         assert_eq!(vec_parsed, vec![1, 2, 3, 4, 5]);
@@ -215,11 +206,6 @@ mod tests {
         let end_time = Instant::now();
 
         // Give one extra second for timeout, to account for plumbing.
-        println!("Start time: {:?}  End time: {:?}  Duration: {}",
-                 start_time,
-                 end_time,
-                 timeout_secs);
-        println!("Read string: {}", s);
         assert!(end_time.duration_since(start_time) < Duration::from_secs(timeout_secs + 1));
         assert!(end_time.duration_since(start_time) > Duration::from_secs(timeout_secs - 1));
         assert_eq!(s, "Hi there");
@@ -286,7 +272,6 @@ mod tests {
         let runny = Runny::new("/bin/true");
         for _ in 1..100 {
             assert_eq!(runny.start().unwrap().result(), 0);
-            println!("/bin/true exited");
         }
     }
     #[test]
@@ -294,7 +279,6 @@ mod tests {
         let runny = Runny::new("/bin/false");
         for _ in 1..100 {
             assert_ne!(runny.start().unwrap().result(), 0);
-            println!("/bin/false exited");
         }
     }
 }
