@@ -1,14 +1,16 @@
-extern crate tty;
 extern crate shlex;
-extern crate termios;
-extern crate nix;
 extern crate fd;
 
-use fd::Pipe;
-use termios::{Termios, tcsetattr};
-use tty::FileDesc;
-use tty::ffi::openpty;
-use nix::unistd::setsid;
+#[cfg(unix)]
+extern crate termios;
+
+#[cfg(unix)]
+extern crate nix;
+
+#[cfg(unix)]
+extern crate tty;
+
+use fd::{Pipe, FileDesc};
 
 use std::process::{Child, Command, Stdio};
 use std::io;
@@ -16,9 +18,13 @@ use std::env;
 use std::fmt;
 use std::fs::File;
 use std::time::Duration;
-use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
-use std::os::unix::process::CommandExt;
 use std::collections::HashMap;
+
+#[cfg(unix)]
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 pub mod running;
 
@@ -108,7 +114,7 @@ impl Runny {
                         // Don't check the error of setsid because it fails if we're the
                         // process leader already. We just forked so it shouldn't return
                         // error, but ignore it anyway.
-                       .before_exec(|| { setsid().ok(); Ok(()) })
+                       .before_exec(|| { nix::unistd::setsid().ok(); Ok(()) })
                        .spawn();
         child
     }
@@ -119,7 +125,7 @@ impl Runny {
         let cmd = args.remove(0);
         let mut handles = HashMap::new();
 
-        let pty = openpty(None, None)?;
+        let pty = tty::ffi::openpty(None, None)?;
 
         let mut cmd = Command::new(&cmd);
         cmd.env_clear().args(args.as_slice());
@@ -128,7 +134,7 @@ impl Runny {
         }
 
         // Disable character echo.
-        let mut termios_master = Termios::from_fd(pty.master.as_raw_fd())?;
+        let mut termios_master = termios::Termios::from_fd(pty.master.as_raw_fd())?;
         termios_master.c_iflag &=
             !(termios::IGNBRK | termios::BRKINT | termios::PARMRK | termios::ISTRIP |
               termios::INLCR | termios::IGNCR | termios::ICRNL | termios::IXON);
@@ -140,7 +146,7 @@ impl Runny {
         termios_master.c_cc[termios::VMIN] = 1;
         termios_master.c_cc[termios::VTIME] = 0;
         // XXX: cfmakeraw
-        tcsetattr(pty.master.as_raw_fd(), termios::TCSANOW, &termios_master).unwrap();
+        termios::tcsetattr(pty.master.as_raw_fd(), termios::TCSANOW, &termios_master).unwrap();
 
         // Spawn a child.  Since we're doing this with a TtyServer,
         // it will have its own session, and will terminate

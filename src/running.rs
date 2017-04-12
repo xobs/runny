@@ -1,15 +1,19 @@
+#[cfg(unix)]
 extern crate nix;
-extern crate tty;
 
-use self::nix::sys::signal::{SIGTERM, SIGKILL};
-use self::nix::sys::signal::kill;
-use self::tty::FileDesc;
+#[cfg(unix)]
+use self::nix::sys::signal::{kill, SIGTERM, SIGKILL};
+
+#[cfg(unix)]
+use std::os::unix::io::{AsRawFd, FromRawFd};
+
+extern crate fd;
+use self::fd::FileDesc;
 
 use std::process::Child;
 use std::io::{self, Read, Result, Write};
 use std::fs::File;
 use std::fmt;
-use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use std::result;
@@ -130,9 +134,7 @@ impl Running {
             let mut child_result = lock.lock().unwrap();
 
             let result = match child.wait() {
-                Err(_) => {
-                    Some(-1)
-                }
+                Err(_) => Some(-1),
                 Ok(o) => {
                     match o.code() {
                         Some(c) => Some(c),
@@ -153,7 +155,7 @@ impl Running {
             child_pid: child_pid,
             term_delay: term_delay,
             input: Some(RunningInput { stream: input }),
-            //output: Some(RunningOutput { stream: master }),
+            // output: Some(RunningOutput { stream: master }),
             output: Some(RunningOutput { stream: output }),
             error: stderr,
             term_thr: term_thr,
