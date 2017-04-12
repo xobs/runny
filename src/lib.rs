@@ -12,6 +12,7 @@ use nix::unistd::setsid;
 
 use std::process::{Child, Command, Stdio};
 use std::io;
+use std::env;
 use std::fmt;
 use std::fs::File;
 use std::time::Duration;
@@ -25,6 +26,7 @@ pub struct Runny {
     cmd: String,
     working_directory: Option<String>,
     timeout: Option<Duration>,
+    path: Vec<String>,
 }
 
 pub enum RunnyError {
@@ -53,11 +55,17 @@ impl Runny {
             cmd: cmd.to_string(),
             working_directory: None,
             timeout: None,
+            path: vec![],
         }
     }
 
     pub fn directory(&mut self, wd: &Option<String>) -> &mut Runny {
         self.working_directory = wd.clone();
+        self
+    }
+
+    pub fn path(&mut self, path: Vec<String>) -> &mut Runny {
+        self.path = path;
         self
     }
 
@@ -89,15 +97,19 @@ impl Runny {
         let stdout = unsafe { Stdio::from_raw_fd(slave_fd.as_raw_fd()) };
         let stderr = unsafe { Stdio::from_raw_fd(stderr_tx.into_raw_fd()) };
 
-        let child = cmd.stdin(stdin).
-                        stdout(stdout).
+        if self.path.len() > 0 {
+            cmd.env("PATH", env::join_paths(&self.path).unwrap());
+        }
+
+        let child = cmd.stdin(stdin)
+                       .stdout(stdout)
                         // Must close the slave FD to not wait indefinitely the end of the proxy
-                        stderr(stderr).
+                       .stderr(stderr)
                         // Don't check the error of setsid because it fails if we're the
                         // process leader already. We just forked so it shouldn't return
                         // error, but ignore it anyway.
-                        before_exec(|| { setsid().ok(); Ok(()) }).
-                        spawn();
+                       .before_exec(|| { setsid().ok(); Ok(()) })
+                       .spawn();
         child
     }
 
