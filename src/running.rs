@@ -1,14 +1,8 @@
-#[cfg(unix)]
 extern crate nix;
+extern crate kernel32;
 
 #[cfg(unix)]
 use self::nix::sys::signal::{kill, SIGTERM, SIGKILL};
-
-#[cfg(unix)]
-use std::os::unix::io::{AsRawFd, FromRawFd};
-
-extern crate fd;
-use self::fd::FileDesc;
 
 use std::process::Child;
 use std::io::{self, Read, Result, Write};
@@ -50,6 +44,7 @@ pub struct Running {
 
 pub enum RunningError {
     RunningIoError(io::Error),
+    #[cfg(unix)]
     RunningNixError(self::nix::Error),
 }
 
@@ -59,6 +54,7 @@ impl From<io::Error> for RunningError {
     }
 }
 
+#[cfg(unix)]
 impl From<self::nix::Error> for RunningError {
     fn from(kind: self::nix::Error) -> Self {
         RunningError::RunningNixError(kind)
@@ -69,6 +65,7 @@ impl fmt::Debug for RunningError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             &RunningError::RunningIoError(ref e) => write!(f, "Running I/O error: {:?}", e),
+            #[cfg(unix)]
             &RunningError::RunningNixError(ref e) => write!(f, "Running Nix error: {:?}", e),
         }
     }
@@ -82,21 +79,20 @@ impl fmt::Debug for Running {
 
 impl Running {
     pub fn new(mut child: Child,
-               master: File,
+               input: File,
+               output: File,
                timeout: Option<Duration>,
                mut handles: HashMap<String, File>)
                -> Running {
-        let input = unsafe {
-            File::from_raw_fd(FileDesc::new(master.as_raw_fd(), false).dup().unwrap().as_raw_fd())
-        };
-        // let output = unsafe { File::from_raw_fd(master.into_raw_fd()) };
-        let output = master;
 
         // Drop stdin/stdout/stderr on the child, since we access it using
         // the "master" file instead.
-        drop(child.stdin.take());
-        drop(child.stdout.take());
-        drop(child.stderr.take());
+        #[cfg(unix)]
+        {
+            drop(child.stdin.take());
+            drop(child.stdout.take());
+            drop(child.stderr.take());
+        }
 
         let child_pid = child.id() as i32;
         let child_result = Arc::new((Mutex::new(None), Condvar::new()));
@@ -116,14 +112,33 @@ impl Running {
 
             // We've been woken up, so it's time to terminate the child process.
             // Use a negative value to terminate all children in the process group.
-            kill(-child_pid, SIGTERM).ok();
+            #[cfg(unix)]
+            {
+                kill(-child_pid, SIGTERM).ok();
 
-            if let Some(t) = *term_delay_thr.lock().unwrap() {
-                thread::park_timeout(t);
+                if let Some(t) = *term_delay_thr.lock().unwrap() {
+                    thread::park_timeout(t);
+                }
+
+                // Send a SIGKILL to all children, to ensure they're gone.
+                kill(-child_pid, SIGKILL).ok();
             }
-
-            // Send a SIGKILL to all children, to ensure they're gone.
-            kill(-child_pid, SIGKILL).ok();
+            #[cfg(windows)]
+            {
+                let return_result = unsafe {
+                    // let handle = transmute::<usize, *mut c_void>(pid_native);
+                    let handle = self::kernel32::OpenProcess(1, // PROCESS_TERMINATE
+                                                             0,
+                                                             child_pid as u32);
+                    let result = self::kernel32::TerminateProcess(handle, 1);
+                    if result == 0 {
+                        let reason = self::kernel32::GetLastError();
+                        println!("Couldn't terminate {}: {}", result, reason);
+                    };
+                    result
+                };
+                println!("Should have terminated: {}", return_result);
+            }
         })));
 
         // This thread just does a wait() on the child, and stores the result

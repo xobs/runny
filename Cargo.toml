@@ -9,8 +9,11 @@ repository = "https://github.com/xobs/runny"
 [dependencies]
 shlex = "0.1.1"
 fd = "0.2.2"
+nix = "0.8.0"
+kernel32-sys = "0.2.2"
 
 [target.'cfg(unix)'.dependencies]
 tty = { git = "https://github.com/xobs/tty-rs.git", rev = "42599fb207c2c1a81b45a1e9985a16fc33596151" }
-nix = "0.8.0"
 termios = "0.2.2"
+
+[target.'cfg(windows)'.dependencies]

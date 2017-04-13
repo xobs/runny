@@ -1,16 +1,13 @@
 extern crate shlex;
 extern crate fd;
+extern crate nix;
 
 #[cfg(unix)]
 extern crate termios;
 
-#[cfg(unix)]
-extern crate nix;
 
 #[cfg(unix)]
 extern crate tty;
-
-use fd::{Pipe, FileDesc};
 
 use std::process::{Child, Command, Stdio};
 use std::io;
@@ -22,6 +19,8 @@ use std::collections::HashMap;
 
 #[cfg(unix)]
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
+#[cfg(windows)]
+use std::os::windows::io::{AsRawHandle, FromRawHandle};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -75,17 +74,19 @@ impl Runny {
         self
     }
 
-    pub fn timeout(&mut self, timeout: &Duration) -> &mut Runny {
-        self.timeout = Some(timeout.clone());
+    pub fn timeout(&mut self, timeout: Duration) -> &mut Runny {
+        self.timeout = Some(timeout);
         self
     }
 
     /// Spawn a new process connected to the slave TTY
+    #[cfg(unix)]
     fn spawn(&self,
              mut cmd: Command,
              slave: File,
              handles: &mut HashMap<String, File>)
              -> io::Result<Child> {
+        use fd::{Pipe, FileDesc};
 
         // When reading from the pty, sometimes we get -EIO or -EBADF,
         // which can be ignored.  But Rust really doesn't like this.
@@ -103,10 +104,6 @@ impl Runny {
         let stdout = unsafe { Stdio::from_raw_fd(slave_fd.as_raw_fd()) };
         let stderr = unsafe { Stdio::from_raw_fd(stderr_tx.into_raw_fd()) };
 
-        if self.path.len() > 0 {
-            cmd.env("PATH", env::join_paths(&self.path).unwrap());
-        }
-
         let child = cmd.stdin(stdin)
                        .stdout(stdout)
                         // Must close the slave FD to not wait indefinitely the end of the proxy
@@ -119,19 +116,12 @@ impl Runny {
         child
     }
 
-    pub fn start(&self) -> Result<running::Running, RunnyError> {
-
-        let mut args = Self::make_command(self.cmd.as_str()).unwrap();
-        let cmd = args.remove(0);
-        let mut handles = HashMap::new();
-
+    #[cfg(unix)]
+    fn open_session(&self,
+                    cmd: Command,
+                    mut handles: HashMap<String, File>)
+                    -> Result<running::Running, RunnyError> {
         let pty = tty::ffi::openpty(None, None)?;
-
-        let mut cmd = Command::new(&cmd);
-        cmd.env_clear().args(args.as_slice());
-        if let Some(ref wd) = self.working_directory {
-            cmd.current_dir(wd);
-        }
 
         // Disable character echo.
         let mut termios_master = termios::Termios::from_fd(pty.master.as_raw_fd())?;
@@ -145,15 +135,59 @@ impl Runny {
         termios_master.c_cflag |= termios::CS8;
         termios_master.c_cc[termios::VMIN] = 1;
         termios_master.c_cc[termios::VTIME] = 0;
-        // XXX: cfmakeraw
-        termios::tcsetattr(pty.master.as_raw_fd(), termios::TCSANOW, &termios_master).unwrap();
+        termios::tcsetattr(pty.master.as_raw_fd(), termios::TCSANOW, &termios_master)?;
 
         // Spawn a child.  Since we're doing this with a TtyServer,
         // it will have its own session, and will terminate
         // let child = self.spawn(&mut tty, cmd, &mut handles).unwrap();
         let child = self.spawn(cmd, pty.slave, &mut handles)?;
 
-        Ok(running::Running::new(child, pty.master, self.timeout, handles))
+        let stdin = unsafe {
+            File::from_raw_fd(fd::FileDesc::new(pty.master.as_raw_fd(), false)
+                .dup()
+                .unwrap()
+                .as_raw_fd())
+        };
+        let stdout = pty.master;
+        Ok(running::Running::new(child, stdin, stdout, self.timeout, handles))
+    }
+
+    #[cfg(windows)]
+    fn open_session(&self,
+                    mut cmd: Command,
+                    mut handles: HashMap<String, File>)
+                    -> Result<running::Running, RunnyError> {
+        let mut child =
+            cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+
+        if self.path.len() > 0 {
+            cmd.env("PATH", env::join_paths(&self.path).unwrap());
+        }
+
+        // Transmute the Handles into Files.
+        let stdin = unsafe { File::from_raw_handle(child.stdin.take().unwrap().as_raw_handle()) };
+        let stdout = unsafe { File::from_raw_handle(child.stdout.take().unwrap().as_raw_handle()) };
+        let stderr = unsafe { File::from_raw_handle(child.stderr.take().unwrap().as_raw_handle()) };
+
+        handles.insert("stderr".to_string(), stderr);
+
+        Ok(running::Running::new(child, stdout, stdin, self.timeout, handles))
+    }
+
+    pub fn start(&self) -> Result<running::Running, RunnyError> {
+
+        let mut args = Self::make_command(self.cmd.as_str()).unwrap();
+        let cmd = args.remove(0);
+        let handles = HashMap::new();
+
+        let mut cmd = Command::new(&cmd);
+        cmd.args(args.as_slice());
+        //        cmd.env_clear();
+        if let Some(ref wd) = self.working_directory {
+            cmd.current_dir(wd);
+        }
+
+        self.open_session(cmd, handles)
     }
 
     fn make_command(cmd: &str) -> Result<Vec<String>, RunnyError> {
@@ -215,7 +249,7 @@ mod tests {
     fn timeout_works() {
         let timeout_secs = 3;
         let mut cmd = Runny::new("/bin/bash -c 'echo -n Hi there; sleep 1000; echo -n Bye there'");
-        cmd.timeout(&Duration::from_secs(timeout_secs));
+        cmd.timeout(Duration::from_secs(timeout_secs));
 
         let start_time = Instant::now();
         let mut running = cmd.start().unwrap();
@@ -233,7 +267,7 @@ mod tests {
     fn read_write() {
         let mut running = Runny::new("/bin/bash -c 'echo Input:; read foo; echo Got string: \
                                   -$foo-; sleep 1; echo Cool'")
-            .timeout(&Duration::from_secs(5))
+            .timeout(Duration::from_secs(5))
             .start()
             .unwrap();
         let mut input = running.take_input();
@@ -245,6 +279,32 @@ mod tests {
 
         running.terminate(None).unwrap();
         assert_eq!(result, "Input:\nGot string: -bar-\nCool\n");
+    }
+
+    #[test]
+    fn read_write_err() {
+        let mut running = Runny::new("/bin/bash -c 'echo Input:; read foo; echo Got string: \
+                                  -$foo-; echo -n Error string 1>&2; sleep 1; echo Cool'")
+            .timeout(Duration::from_secs(5))
+            .start()
+            .unwrap();
+        let mut input = running.take_input();
+        let mut output = running.take_output();
+        let mut error = running.take_error();
+
+        writeln!(input, "bar").unwrap();
+
+        let mut result = String::new();
+        let mut err_result = String::new();
+
+        output.read_to_string(&mut result).unwrap();
+        error.read_to_string(&mut err_result).unwrap();
+
+        running.terminate(None).unwrap();
+        println!("stdout: {}", result);
+        println!("stderr: {}", err_result);
+        assert_eq!(result, "Input:\nGot string: -bar-\nCool\n");
+        assert_eq!(err_result, "Error string");
     }
 
     #[test]
@@ -305,5 +365,21 @@ mod tests {
         let runny = Runny::new("/bin/does/not/exist");
         let running = runny.start();
         assert!(running.is_err());
+    }
+
+    #[test]
+    fn notepad() {
+        let mut cmd = Runny::new("C:\\Windows\\notepad.exe");
+        cmd.timeout(Duration::from_secs(2));
+
+        let start_time = Instant::now();
+        let run = cmd.start().unwrap();
+        let waiter = run.waiter();
+        waiter.wait();
+        let end_time = Instant::now();
+
+        // Give one extra second for timeout, to account for plumbing.
+        assert!(end_time.duration_since(start_time) < Duration::from_secs(3));
+        assert!(end_time.duration_since(start_time) > Duration::from_secs(1));
     }
 }
