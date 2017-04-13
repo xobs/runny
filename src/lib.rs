@@ -165,9 +165,11 @@ impl Runny {
         }
 
         // Transmute the Handles into Files.
-        let stdin = unsafe { File::from_raw_handle(child.stdin.take().unwrap().as_raw_handle()) };
-        let stdout = unsafe { File::from_raw_handle(child.stdout.take().unwrap().as_raw_handle()) };
-        let stderr = unsafe { File::from_raw_handle(child.stderr.take().unwrap().as_raw_handle()) };
+        let stdin = unsafe { File::from_raw_handle(child.stdin.take().unwrap().into_raw_handle()) };
+        let stdout =
+            unsafe { File::from_raw_handle(child.stdout.take().unwrap().into_raw_handle()) };
+        let stderr =
+            unsafe { File::from_raw_handle(child.stderr.take().unwrap().into_raw_handle()) };
 
         handles.insert("stderr".to_string(), stderr);
 
