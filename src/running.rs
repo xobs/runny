@@ -96,6 +96,8 @@ impl Running {
         let child_result = Arc::new((Mutex::new(None), Condvar::new()));
         let child_result_thr = child_result.clone();
         let term_delay: Arc<Mutex<Option<Duration>>> = Arc::new(Mutex::new(None));
+
+        #[cfg(unix)]
         let term_delay_thr = term_delay.clone();
 
         let term_thr = Arc::new(Mutex::new(thread::spawn(move || {
@@ -123,19 +125,12 @@ impl Running {
             }
             #[cfg(windows)]
             {
-                let return_result = unsafe {
-                    // let handle = transmute::<usize, *mut c_void>(pid_native);
+                unsafe {
                     let handle = self::kernel32::OpenProcess(1, // PROCESS_TERMINATE
                                                              0,
                                                              child_pid as u32);
-                    let result = self::kernel32::TerminateProcess(handle, 1);
-                    if result == 0 {
-                        let reason = self::kernel32::GetLastError();
-                        println!("Couldn't terminate {}: {}", result, reason);
-                    };
-                    result
-                };
-                println!("Should have terminated: {}", return_result);
+                    self::kernel32::TerminateProcess(handle, 1);
+                }
             }
         })));
 

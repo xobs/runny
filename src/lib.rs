@@ -9,7 +9,9 @@ extern crate termios;
 #[cfg(unix)]
 extern crate tty;
 
-use std::process::{Child, Command, Stdio};
+#[cfg(unix)]
+use std::process::Child;
+use std::process::{Command, Stdio};
 use std::io;
 use std::env;
 use std::fmt;
@@ -20,7 +22,7 @@ use std::collections::HashMap;
 #[cfg(unix)]
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
 #[cfg(windows)]
-use std::os::windows::io::{AsRawHandle, FromRawHandle};
+use std::os::windows::io::{FromRawHandle, IntoRawHandle};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -173,7 +175,7 @@ impl Runny {
 
         handles.insert("stderr".to_string(), stderr);
 
-        Ok(running::Running::new(child, stdout, stdin, self.timeout, handles))
+        Ok(running::Running::new(child, stdin, stdout, self.timeout, handles))
     }
 
     pub fn start(&self) -> Result<running::Running, RunnyError> {
@@ -370,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn notepad() {
+    fn win_notepad() {
         let mut cmd = Runny::new("C:\\Windows\\notepad.exe");
         cmd.timeout(Duration::from_secs(2));
 
@@ -384,4 +386,30 @@ mod tests {
         assert!(end_time.duration_since(start_time) < Duration::from_secs(3));
         assert!(end_time.duration_since(start_time) > Duration::from_secs(1));
     }
+
+    #[test]
+    fn win_output() {
+        let mut running = Runny::new("cmd /c echo Launch test echo works")
+            .timeout(Duration::from_secs(2))
+            .start()
+            .unwrap();
+        let mut simple_str = String::new();
+
+        running.read_to_string(&mut simple_str).unwrap();
+        assert_eq!(simple_str, "Launch test echo works\r\n");
+    }
+
+    #[test]
+    fn win_take_output() {
+        let mut running = Runny::new("cmd /c echo Launch test echo works")
+            .timeout(Duration::from_secs(2))
+            .start()
+            .unwrap();
+        let mut simple_str = String::new();
+
+        let mut output = running.take_output();
+        output.read_to_string(&mut simple_str).unwrap();
+        assert_eq!(simple_str, "Launch test echo works\r\n");
+    }
+
 }
