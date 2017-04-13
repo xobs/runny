@@ -87,12 +87,10 @@ impl Running {
 
         // Drop stdin/stdout/stderr on the child, since we access it using
         // the "master" file instead.
-        #[cfg(unix)]
-        {
-            drop(child.stdin.take());
-            drop(child.stdout.take());
-            drop(child.stderr.take());
-        }
+        // On Windows, these handles will already be None.
+        drop(child.stdin.take());
+        drop(child.stdout.take());
+        drop(child.stderr.take());
 
         let child_pid = child.id() as i32;
         let child_result = Arc::new((Mutex::new(None), Condvar::new()));
