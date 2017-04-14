@@ -5,7 +5,6 @@ extern crate nix;
 #[cfg(unix)]
 extern crate termios;
 
-
 #[cfg(unix)]
 extern crate tty;
 
@@ -373,8 +372,10 @@ mod tests {
 
     #[test]
     fn win_notepad() {
+        let timeout_secs = 3;
+
         let mut cmd = Runny::new("C:\\Windows\\notepad.exe");
-        cmd.timeout(Duration::from_secs(2));
+        cmd.timeout(Duration::from_secs(timeout_secs));
 
         let start_time = Instant::now();
         let run = cmd.start().unwrap();
@@ -383,8 +384,28 @@ mod tests {
         let end_time = Instant::now();
 
         // Give one extra second for timeout, to account for plumbing.
-        assert!(end_time.duration_since(start_time) < Duration::from_secs(3));
-        assert!(end_time.duration_since(start_time) > Duration::from_secs(1));
+        assert!(end_time.duration_since(start_time) < Duration::from_secs(timeout_secs + 1));
+        assert!(end_time.duration_since(start_time) > Duration::from_secs(timeout_secs - 1));
+    }
+
+    #[test]
+    fn win_notepad_term_delay() {
+        use std::thread;
+
+        let timeout_secs = 3;
+
+        let cmd = Runny::new("C:\\Windows\\notepad.exe");
+
+        let run = cmd.start().unwrap();
+        thread::sleep(Duration::from_secs(3));
+
+        let start_time = Instant::now();
+        run.terminate(Some(Duration::from_secs(timeout_secs))).unwrap();
+        let end_time = Instant::now();
+
+        // Give one extra second for timeout, to account for plumbing.
+        assert!(end_time.duration_since(start_time) < Duration::from_secs(timeout_secs + 1));
+        assert!(end_time.duration_since(start_time) > Duration::from_secs(timeout_secs - 1));
     }
 
     #[test]

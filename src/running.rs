@@ -1,5 +1,7 @@
 extern crate nix;
 extern crate kernel32;
+extern crate user32;
+extern crate winapi;
 
 #[cfg(unix)]
 use self::nix::sys::signal::{kill, SIGTERM, SIGKILL};
@@ -77,6 +79,38 @@ impl fmt::Debug for Running {
     }
 }
 
+#[cfg(windows)]
+// fn send_wmclose(process_id: &self::winapi::HANDLE) -> self::winapi::minwindef::BOOL {
+fn send_wmclose(process_id: self::winapi::LPWORD) -> self::winapi::minwindef::BOOL {
+    use self::winapi::{HWND, LPARAM, DWORD};
+
+    println!("Doing test for {:?}", process_id);
+    extern "system" fn enum_windows_callback(hwnd: HWND,
+                                             target_pid: LPARAM)
+                                             -> self::winapi::minwindef::BOOL {
+        let mut found_process_id = 0;
+        let target_pid = target_pid as DWORD;
+
+        unsafe { self::user32::GetWindowThreadProcessId(hwnd, &mut found_process_id) };
+
+        if found_process_id == target_pid {
+            println!("Found PID {:?} matched target PID", target_pid);
+            unsafe { self::user32::PostMessageW(hwnd, self::winapi::WM_CLOSE, 0, 0) };
+        }
+        // println!("Found window: {:?}  PID: {:?}/{:?}/{:?}",
+        // hwnd,
+        // found_process_id,
+        // target_pid,
+        // source_process_id);
+
+        // Continue enumerating windows
+        1
+    }
+
+    // let enum_func_ptr = &mut enum_func as F;
+    unsafe { self::user32::EnumWindows(Some(enum_windows_callback), process_id as LPARAM) }
+}
+
 impl Running {
     pub fn new(mut child: Child,
                input: File,
@@ -97,7 +131,6 @@ impl Running {
         let child_result_thr = child_result.clone();
         let term_delay: Arc<Mutex<Option<Duration>>> = Arc::new(Mutex::new(None));
 
-        #[cfg(unix)]
         let term_delay_thr = term_delay.clone();
 
         let term_thr = Arc::new(Mutex::new(thread::spawn(move || {
@@ -125,6 +158,13 @@ impl Running {
             }
             #[cfg(windows)]
             {
+                // Post the WM_CLOSE message to each window
+                send_wmclose(child_pid as self::winapi::LPWORD);
+
+                if let Some(t) = *term_delay_thr.lock().unwrap() {
+                    thread::park_timeout(t);
+                }
+
                 unsafe {
                     let handle = self::kernel32::OpenProcess(1, // PROCESS_TERMINATE
                                                              0,
@@ -199,7 +239,7 @@ impl Running {
         &self.error
     }
 
-    pub fn wait(&mut self) -> result::Result<i32, RunningError> {
+    pub fn wait(&self) -> result::Result<i32, RunningError> {
         // Convert a None ExitStatus into -1, removing
         // the Option<> from the type chain.
         let &(ref lock, ref cvar) = &*self.result;
@@ -218,7 +258,7 @@ impl Running {
         }
     }
 
-    pub fn result(&mut self) -> i32 {
+    pub fn result(&self) -> i32 {
         self.wait().unwrap();
 
         // We can unwrap here, because wait() should always set Some
@@ -232,7 +272,7 @@ impl Running {
         ret.unwrap()
     }
 
-    pub fn terminate(&mut self, timeout: Option<Duration>) -> result::Result<i32, RunningError> {
+    pub fn terminate(&self, timeout: Option<Duration>) -> result::Result<i32, RunningError> {
 
         // If there's already a result, then the process has exited already.
         {
