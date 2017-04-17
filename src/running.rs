@@ -84,7 +84,6 @@ impl fmt::Debug for Running {
 fn send_wmclose(process_id: self::winapi::LPWORD) -> self::winapi::minwindef::BOOL {
     use self::winapi::{HWND, LPARAM, DWORD};
 
-    println!("Doing test for {:?}", process_id);
     extern "system" fn enum_windows_callback(hwnd: HWND,
                                              target_pid: LPARAM)
                                              -> self::winapi::minwindef::BOOL {
@@ -94,14 +93,8 @@ fn send_wmclose(process_id: self::winapi::LPWORD) -> self::winapi::minwindef::BO
         unsafe { self::user32::GetWindowThreadProcessId(hwnd, &mut found_process_id) };
 
         if found_process_id == target_pid {
-            println!("Found PID {:?} matched target PID", target_pid);
             unsafe { self::user32::PostMessageW(hwnd, self::winapi::WM_CLOSE, 0, 0) };
         }
-        // println!("Found window: {:?}  PID: {:?}/{:?}/{:?}",
-        // hwnd,
-        // found_process_id,
-        // target_pid,
-        // source_process_id);
 
         // Continue enumerating windows
         1
