@@ -204,9 +204,13 @@ impl Runny {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, BufRead, Write};
+    use std::io::Read;
+
+    #[cfg(unix)]
+    use std::io::{BufRead, Write};
     use std::time::Instant;
 
+    #[cfg(unix)]
     #[test]
     fn launch_echo() {
         let mut running = Runny::new("/bin/echo -n 'Launch test echo works'").start().unwrap();
@@ -216,6 +220,7 @@ mod tests {
         assert_eq!(simple_str, "Launch test echo works");
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_multi_lines() {
         let mut running = Runny::new("/usr/bin/seq 1 5").start().unwrap();
@@ -229,6 +234,7 @@ mod tests {
         assert_eq!(vec_parsed, vec![1, 2, 3, 4, 5]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn terminate_works() {
         let timeout_secs = 5;
@@ -246,6 +252,7 @@ mod tests {
         assert!(end_time.duration_since(start_time) < Duration::from_secs(timeout_secs + 1));
     }
 
+    #[cfg(unix)]
     #[test]
     fn timeout_works() {
         let timeout_secs = 3;
@@ -264,6 +271,7 @@ mod tests {
         assert_eq!(s, "Hi there");
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_write() {
         let mut running = Runny::new("/bin/bash -c 'echo Input:; read foo; echo Got string: \
@@ -282,6 +290,7 @@ mod tests {
         assert_eq!(result, "Input:\nGot string: -bar-\nCool\n");
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_write_err() {
         let mut running = Runny::new("/bin/bash -c 'echo Input:; read foo; echo Got string: \
@@ -308,12 +317,14 @@ mod tests {
         assert_eq!(err_result, "Error string");
     }
 
+    #[cfg(unix)]
     #[test]
     fn exit_codes() {
         assert_eq!(Runny::new("/bin/true").start().unwrap().result(), 0);
         assert_ne!(Runny::new("/bin/false").start().unwrap().result(), 0);
     }
 
+    #[cfg(unix)]
     #[test]
     fn running_waiter_wait() {
         let cmd = Runny::new("/bin/bash -c 'sleep 2'");
@@ -329,6 +340,7 @@ mod tests {
         assert!(end_time.duration_since(start_time) > Duration::from_secs(1));
     }
 
+    #[cfg(unix)]
     #[test]
     fn running_waiter_result() {
         let run = Runny::new("/bin/bash -c 'exit 1'").start().unwrap();
@@ -337,6 +349,7 @@ mod tests {
         assert_eq!(waiter.result(), 1);
     }
 
+    #[cfg(unix)]
     #[test]
     fn read_stderr() {
         let mut run = Runny::new("/bin/bash -c 'echo -n error-test 1>&2'").start().unwrap();
@@ -346,6 +359,7 @@ mod tests {
         assert_eq!(s, "error-test");
     }
 
+    #[cfg(unix)]
     #[test]
     fn many_commands_true() {
         let runny = Runny::new("/bin/true");
@@ -353,6 +367,8 @@ mod tests {
             assert_eq!(runny.start().unwrap().result(), 0);
         }
     }
+
+    #[cfg(unix)]
     #[test]
     fn many_commands_false() {
         let runny = Runny::new("/bin/false");
@@ -368,6 +384,7 @@ mod tests {
         assert!(running.is_err());
     }
 
+    #[cfg(windows)]
     #[test]
     fn win_notepad() {
         let timeout_secs = 3;
@@ -386,6 +403,7 @@ mod tests {
         assert!(end_time.duration_since(start_time) > Duration::from_secs(timeout_secs - 1));
     }
 
+    #[cfg(windows)]
     #[test]
     fn win_notepad_term_delay() {
         use std::thread;
@@ -406,6 +424,7 @@ mod tests {
         assert!(end_time.duration_since(start_time) > Duration::from_secs(timeout_secs - 1));
     }
 
+    #[cfg(windows)]
     #[test]
     fn win_output() {
         let mut running = Runny::new("cmd /c echo Launch test echo works")
@@ -418,6 +437,7 @@ mod tests {
         assert_eq!(simple_str, "Launch test echo works\r\n");
     }
 
+    #[cfg(windows)]
     #[test]
     fn win_take_output() {
         let mut running = Runny::new("cmd /c echo Launch test echo works")
@@ -431,4 +451,18 @@ mod tests {
         assert_eq!(simple_str, "Launch test echo works\r\n");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn win_msgbox() {
+        let running = Runny::new("powershell \
+                                  [Reflection.Assembly]::LoadWithPartialName(\"\"\"System.\
+                                  Windows.Forms\"\"\");[Windows.Forms.MessageBox]::\
+                                  show(\"\"\"Hello World\"\"\", \"\"\"My PopUp Message Box\"\"\")")
+            .timeout(Duration::from_secs(2))
+            .start()
+            .unwrap();
+        use std::thread;
+        thread::sleep(Duration::from_secs(2));
+        running.terminate(Some(Duration::from_secs(2))).unwrap();
+    }
 }
