@@ -6,9 +6,6 @@ extern crate nix;
 extern crate termios;
 
 #[cfg(unix)]
-extern crate tty;
-
-#[cfg(unix)]
 use std::process::Child;
 use std::process::{Command, Stdio};
 use std::io;
@@ -27,6 +24,7 @@ use std::os::windows::io::{FromRawHandle, IntoRawHandle};
 use std::os::unix::process::CommandExt;
 
 pub mod running;
+pub mod openpty;
 
 pub struct Runny {
     cmd: String,
@@ -122,7 +120,7 @@ impl Runny {
                     cmd: Command,
                     mut handles: HashMap<String, File>)
                     -> Result<running::Running, RunnyError> {
-        let pty = tty::ffi::openpty(None, None)?;
+        let pty = openpty::openpty()?;
 
         // Disable character echo.
         let mut termios_master = termios::Termios::from_fd(pty.master.as_raw_fd())?;
