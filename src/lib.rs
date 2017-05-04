@@ -24,6 +24,8 @@ use std::os::windows::io::{FromRawHandle, IntoRawHandle};
 use std::os::unix::process::CommandExt;
 
 pub mod running;
+
+#[cfg(unix)]
 pub mod openpty;
 
 pub struct Runny {
