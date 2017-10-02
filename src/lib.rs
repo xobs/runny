@@ -107,8 +107,7 @@ impl Runny {
         //
         let (stderr_rx, stderr_tx) = pipe2(O_CLOEXEC)?;
 
-        let stderr =
-            unsafe { File::from_raw_fd(stderr_rx) };
+        let stderr = unsafe { File::from_raw_fd(stderr_rx) };
         handles.insert("stderr".to_owned(), stderr);
 
         let stdin = unsafe { Stdio::from_raw_fd(dup(slave_fd)?) };
@@ -265,11 +264,13 @@ mod tests {
     #[test]
     fn timeout_works() {
         let timeout_secs = 3;
-        let mut cmd = Runny::new("/bin/bash -c 'echo -n Hi there; sleep 1000; echo -n Bye there'");
-        cmd.timeout(Duration::from_secs(timeout_secs));
-
         let start_time = Instant::now();
-        let mut running = cmd.start().unwrap();
+
+        let mut running = Runny::new("/bin/bash -c 'echo -n Hi there; sleep 1000; echo -n Bye there'")
+            .timeout(Duration::from_secs(timeout_secs))
+            .start()
+            .unwrap();
+
         let mut s = String::new();
         running.read_to_string(&mut s).unwrap();
         let end_time = Instant::now();
@@ -284,8 +285,7 @@ mod tests {
     #[test]
     fn read_write() {
         let mut running = Runny::new("/bin/bash -c 'echo Input:; read foo; echo Got string: \
-                                  -$foo-; sleep 1; echo Cool'")
-            .timeout(Duration::from_secs(5))
+                                  -$foo-; sleep 1; echo End'")
             .start()
             .unwrap();
         let mut input = running.take_input();
@@ -296,7 +296,7 @@ mod tests {
         output.read_to_string(&mut result).unwrap();
 
         running.terminate(None).unwrap();
-        assert_eq!(result, "Input:\nGot string: -bar-\nCool\n");
+        assert_eq!(result, "Input:\nGot string: -bar-\nEnd\n");
     }
 
     #[cfg(unix)]
@@ -440,8 +440,18 @@ mod tests {
 
                 if found_process_id == target_pid {
                     let class_name = CString::new("EDIT").expect("Couldn't convert class name");
-                    let edit_hwnd = unsafe { self::user32::FindWindowExA(hwnd, ptr::null_mut(), class_name.as_ptr(), ptr::null_mut()) };
-                    unsafe { self::user32::PostMessageW(edit_hwnd, self::winapi::WM_CHAR, 'A' as WPARAM, 0) };
+                    let edit_hwnd = unsafe {
+                        self::user32::FindWindowExA(hwnd,
+                                                    ptr::null_mut(),
+                                                    class_name.as_ptr(),
+                                                    ptr::null_mut())
+                    };
+                    unsafe {
+                        self::user32::PostMessageW(edit_hwnd,
+                                                   self::winapi::WM_CHAR,
+                                                   'A' as WPARAM,
+                                                   0)
+                    };
                 }
 
                 // Continue enumerating windows
