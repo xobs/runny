@@ -8,7 +8,6 @@ repository = "https://github.com/xobs/runny"
 
 [dependencies]
 shlex = "0.1.1"
-fd = "0.2.2"
 nix = "0.9.0"
 kernel32-sys = "0.2.2"
 user32-sys = "0.2.0"

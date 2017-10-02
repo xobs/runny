@@ -1,5 +1,4 @@
 extern crate shlex;
-extern crate fd;
 extern crate nix;
 
 #[cfg(unix)]
@@ -13,7 +12,7 @@ use std::time::Duration;
 use std::collections::HashMap;
 
 #[cfg(unix)]
-use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
+use std::os::unix::io::FromRawFd;
 #[cfg(windows)]
 use std::os::windows::io::{FromRawHandle, IntoRawHandle};
 
@@ -23,9 +22,11 @@ use std::os::unix::process::CommandExt;
 #[cfg(unix)]
 use nix::pty::openpty;
 #[cfg(unix)]
-use nix::unistd::dup;
+use nix::unistd::{dup, pipe2};
 #[cfg(unix)]
 use nix::sys::termios;
+#[cfg(unix)]
+use nix::fcntl::O_CLOEXEC;
 
 pub mod running;
 
@@ -96,26 +97,23 @@ impl Runny {
     #[cfg(unix)]
     fn spawn(&self,
              mut cmd: Command,
-             slave: File,
+             slave_fd: i32,
              handles: &mut HashMap<String, File>)
-             -> io::Result<Child> {
-        use fd::{Pipe, FileDesc};
+             -> Result<Child, RunnyError> {
 
         // When reading from the pty, sometimes we get -EIO or -EBADF,
         // which can be ignored.  But Rust really doesn't like this.
         // So send the pty through a pipe, and ignore those errors.
         //
-        let (stderr_tx, stderr_rx) = match Pipe::new() {
-            Ok(p) => (p.writer, p.reader),
-            Err(e) => panic!("Unable to make new pipe: {:?}", e),//return Err(e),
-        };
+        let (stderr_rx, stderr_tx) = pipe2(O_CLOEXEC)?;
 
-        handles.insert("stderr".to_string(), stderr_rx);
+        let stderr =
+            unsafe { File::from_raw_fd(stderr_rx) };
+        handles.insert("stderr".to_owned(), stderr);
 
-        let slave_fd = FileDesc::new(slave.into_raw_fd(), false);
-        let stdin = unsafe { Stdio::from_raw_fd(slave_fd.dup().unwrap().as_raw_fd()) };
-        let stdout = unsafe { Stdio::from_raw_fd(slave_fd.as_raw_fd()) };
-        let stderr = unsafe { Stdio::from_raw_fd(stderr_tx.into_raw_fd()) };
+        let stdin = unsafe { Stdio::from_raw_fd(dup(slave_fd)?) };
+        let stdout = unsafe { Stdio::from_raw_fd(slave_fd) };
+        let stderr = unsafe { Stdio::from_raw_fd(stderr_tx) };
 
         let child = cmd.stdin(stdin)
                        .stdout(stdout)
@@ -125,8 +123,8 @@ impl Runny {
                         // process leader already. We just forked so it shouldn't return
                         // error, but ignore it anyway.
                        .before_exec(|| { nix::unistd::setsid().ok(); Ok(()) })
-                       .spawn();
-        child
+                       .spawn()?;
+        Ok(child)
     }
 
     #[cfg(unix)]
@@ -150,11 +148,7 @@ impl Runny {
         termios_master.control_chars[termios::SpecialCharacterIndices::VTIME as usize] = 0;
         termios::tcsetattr(pty.master, termios::SetArg::TCSANOW, &termios_master)?;
 
-        // Spawn a child.  Since we're doing this with a TtyServer,
-        // it will have its own session, and will terminate
-        // let child = self.spawn(&mut tty, cmd, &mut handles).unwrap();
-        let slave_file = unsafe { File::from_raw_fd(pty.slave) };
-        let child = self.spawn(cmd, slave_file, &mut handles)?;
+        let child = self.spawn(cmd, pty.slave, &mut handles)?;
 
         let stdin = unsafe { File::from_raw_fd(dup(pty.master)?) };
         let stdout = unsafe { File::from_raw_fd(dup(pty.master)?) };
