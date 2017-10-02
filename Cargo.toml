@@ -1,6 +1,6 @@
 [package]
 name = "runny"
-version = "1.0.0"
+version = "1.1.0"
 authors = ["Sean Cross <sean@xobs.io>"]
 description = "Run a program inside its own process group"
 license = "MIT"
