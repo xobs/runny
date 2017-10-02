@@ -6,6 +6,7 @@ extern crate nix;
 use std::process::Child;
 use std::process::{Command, Stdio};
 use std::io;
+use std::env;
 use std::fmt;
 use std::fs::File;
 use std::time::Duration;
@@ -219,6 +220,11 @@ mod tests {
     use std::io::{BufRead, Write};
     use std::time::Instant;
 
+    #[cfg(windows)]
+    extern crate winapi;
+    #[cfg(windows)]
+    extern crate user32;
+
     #[cfg(unix)]
     #[test]
     fn launch_echo() {
@@ -423,6 +429,36 @@ mod tests {
 
         let run = cmd.start().unwrap();
         thread::sleep(Duration::from_secs(3));
+
+        fn send_key_a(pid: i32) -> self::winapi::minwindef::BOOL {
+            use self::winapi::{HWND, LPARAM, WPARAM, DWORD};
+            use std::ptr;
+            use std::ffi::CString;
+            let process_id = pid as self::winapi::LPWORD;
+
+            extern "system" fn enum_windows_callback(hwnd: HWND,
+                                                     target_pid: LPARAM)
+                                                     -> self::winapi::minwindef::BOOL {
+                let mut found_process_id = 0;
+                let target_pid = target_pid as DWORD;
+
+                unsafe { self::user32::GetWindowThreadProcessId(hwnd, &mut found_process_id) };
+
+                if found_process_id == target_pid {
+                    let class_name = CString::new("EDIT").expect("Couldn't convert class name");
+                    let edit_hwnd = unsafe { self::user32::FindWindowExA(hwnd, ptr::null_mut(), class_name.as_ptr(), ptr::null_mut()) };
+                    unsafe { self::user32::PostMessageW(edit_hwnd, self::winapi::WM_CHAR, 'A' as WPARAM, 0) };
+                }
+
+                // Continue enumerating windows
+                1
+            }
+
+            // let enum_func_ptr = &mut enum_func as F;
+            unsafe { self::user32::EnumWindows(Some(enum_windows_callback), process_id as LPARAM) }
+        }
+
+        send_key_a(run.pid());
 
         let start_time = Instant::now();
         run.terminate(Some(Duration::from_secs(timeout_secs))).unwrap();

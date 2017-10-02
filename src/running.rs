@@ -83,7 +83,6 @@ impl fmt::Debug for Running {
 }
 
 #[cfg(windows)]
-// fn send_wmclose(process_id: &self::winapi::HANDLE) -> self::winapi::minwindef::BOOL {
 fn send_wmclose(process_id: self::winapi::LPWORD) -> self::winapi::minwindef::BOOL {
     use self::winapi::{HWND, LPARAM, DWORD};
 
@@ -291,6 +290,10 @@ impl Running {
         // Hand execution off to self.wait(), which shouldn't block now that the process is
         // being terminated.
         self.wait()
+    }
+
+    pub fn pid(&self) -> i32 {
+        self.child_pid
     }
 }
 
