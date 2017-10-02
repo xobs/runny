@@ -3,13 +3,9 @@ extern crate fd;
 extern crate nix;
 
 #[cfg(unix)]
-extern crate termios;
-
-#[cfg(unix)]
 use std::process::Child;
 use std::process::{Command, Stdio};
 use std::io;
-use std::env;
 use std::fmt;
 use std::fs::File;
 use std::time::Duration;
@@ -23,10 +19,14 @@ use std::os::windows::io::{FromRawHandle, IntoRawHandle};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-pub mod running;
-
 #[cfg(unix)]
-pub mod openpty;
+use nix::pty::openpty;
+#[cfg(unix)]
+use nix::unistd::dup;
+#[cfg(unix)]
+use nix::sys::termios;
+
+pub mod running;
 
 pub struct Runny {
     cmd: String,
@@ -38,6 +38,8 @@ pub struct Runny {
 pub enum RunnyError {
     RunnyIoError(io::Error),
     NoCommandSpecified,
+    #[cfg(unix)]
+    NixError(nix::Error),
 }
 
 impl fmt::Debug for RunnyError {
@@ -45,6 +47,8 @@ impl fmt::Debug for RunnyError {
         match self {
             &RunnyError::RunnyIoError(ref e) => write!(f, "I/O error: {:?}", e),
             &RunnyError::NoCommandSpecified => write!(f, "No command was specified"),
+            #[cfg(unix)]
+            &RunnyError::NixError(ref e) => write!(f, "Nix library error: {:?}", e),
         }
     }
 }
@@ -52,6 +56,13 @@ impl fmt::Debug for RunnyError {
 impl From<std::io::Error> for RunnyError {
     fn from(kind: std::io::Error) -> Self {
         RunnyError::RunnyIoError(kind)
+    }
+}
+
+#[cfg(unix)]
+impl From<nix::Error> for RunnyError {
+    fn from(kind: nix::Error) -> Self {
+        RunnyError::NixError(kind)
     }
 }
 
@@ -122,34 +133,30 @@ impl Runny {
                     cmd: Command,
                     mut handles: HashMap<String, File>)
                     -> Result<running::Running, RunnyError> {
-        let pty = openpty::openpty()?;
+        let pty = openpty(None, None)?;
 
         // Disable character echo.
-        let mut termios_master = termios::Termios::from_fd(pty.master.as_raw_fd())?;
-        termios_master.c_iflag &=
+        let mut termios_master = termios::tcgetattr(pty.master)?;
+        termios_master.input_flags &=
             !(termios::IGNBRK | termios::BRKINT | termios::PARMRK | termios::ISTRIP |
               termios::INLCR | termios::IGNCR | termios::ICRNL | termios::IXON);
-        termios_master.c_oflag &= !termios::OPOST;
-        termios_master.c_lflag &=
+        termios_master.output_flags &= !termios::OPOST;
+        termios_master.local_flags &=
             !(termios::ECHO | termios::ECHONL | termios::ICANON | termios::ISIG | termios::IEXTEN);
-        termios_master.c_cflag &= !(termios::CSIZE | termios::PARENB);
-        termios_master.c_cflag |= termios::CS8;
-        termios_master.c_cc[termios::VMIN] = 1;
-        termios_master.c_cc[termios::VTIME] = 0;
-        termios::tcsetattr(pty.master.as_raw_fd(), termios::TCSANOW, &termios_master)?;
+        termios_master.control_flags &= !(termios::CSIZE | termios::PARENB);
+        termios_master.control_flags |= termios::CS8;
+        termios_master.control_chars[termios::SpecialCharacterIndices::VMIN as usize] = 1;
+        termios_master.control_chars[termios::SpecialCharacterIndices::VTIME as usize] = 0;
+        termios::tcsetattr(pty.master, termios::SetArg::TCSANOW, &termios_master)?;
 
         // Spawn a child.  Since we're doing this with a TtyServer,
         // it will have its own session, and will terminate
         // let child = self.spawn(&mut tty, cmd, &mut handles).unwrap();
-        let child = self.spawn(cmd, pty.slave, &mut handles)?;
+        let slave_file = unsafe { File::from_raw_fd(pty.slave) };
+        let child = self.spawn(cmd, slave_file, &mut handles)?;
 
-        let stdin = unsafe {
-            File::from_raw_fd(fd::FileDesc::new(pty.master.as_raw_fd(), false)
-                .dup()
-                .unwrap()
-                .as_raw_fd())
-        };
-        let stdout = pty.master;
+        let stdin = unsafe { File::from_raw_fd(dup(pty.master)?) };
+        let stdout = unsafe { File::from_raw_fd(dup(pty.master)?) };
         Ok(running::Running::new(child, stdin, stdout, self.timeout, handles))
     }
 

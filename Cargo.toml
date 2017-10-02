@@ -9,12 +9,11 @@ repository = "https://github.com/xobs/runny"
 [dependencies]
 shlex = "0.1.1"
 fd = "0.2.2"
-nix = "0.8.0"
+nix = "0.9.0"
 kernel32-sys = "0.2.2"
 user32-sys = "0.2.0"
 winapi = "0.2.2"
 
 [target.'cfg(unix)'.dependencies]
-termios = "0.2.2"
 
 [target.'cfg(windows)'.dependencies]

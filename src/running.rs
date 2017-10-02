@@ -6,6 +6,9 @@ extern crate winapi;
 #[cfg(unix)]
 use self::nix::sys::signal::{kill, SIGTERM, SIGKILL};
 
+#[cfg(unix)]
+use self::nix::unistd::Pid;
+
 use std::process::Child;
 use std::io::{self, Read, Result, Write};
 use std::fs::File;
@@ -140,14 +143,14 @@ impl Running {
             // Use a negative value to terminate all children in the process group.
             #[cfg(unix)]
             {
-                kill(-child_pid, SIGTERM).ok();
+                kill(Pid::from_raw(-child_pid), SIGTERM).ok();
 
                 if let Some(t) = *term_delay_thr.lock().unwrap() {
                     thread::park_timeout(t);
                 }
 
                 // Send a SIGKILL to all children, to ensure they're gone.
-                kill(-child_pid, SIGKILL).ok();
+                kill(Pid::from_raw(-child_pid), SIGKILL).ok();
             }
             #[cfg(windows)]
             {
