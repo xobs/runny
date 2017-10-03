@@ -149,7 +149,7 @@ impl Runny {
         let child = self.spawn(cmd, pty.slave, &mut handles)?;
 
         let stdin = unsafe { File::from_raw_fd(dup(pty.master)?) };
-        let stdout = unsafe { File::from_raw_fd(dup(pty.master)?) };
+        let stdout = unsafe { File::from_raw_fd(pty.master) };
         Ok(running::Running::new(child, stdin, stdout, self.timeout, handles))
     }
 
