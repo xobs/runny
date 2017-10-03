@@ -33,6 +33,12 @@ pub struct RunningInput {
     stream: File,
 }
 
+#[derive(PartialEq)]
+enum ProcessState {
+    Running,
+    Exited,
+}
+
 // We must not drop "tty" until the process exits,
 // however we never actually /use/ tty.
 #[allow(dead_code)]
@@ -45,6 +51,7 @@ pub struct Running {
     term_delay: Arc<Mutex<Option<Duration>>>,
     wait_thr: JoinHandle<()>,
     result: Arc<(Mutex<Option<i32>>, Condvar)>,
+    state: Arc<Mutex<ProcessState>>,
 }
 
 pub enum RunningError {
@@ -125,6 +132,7 @@ impl Running {
         let child_result = Arc::new((Mutex::new(None), Condvar::new()));
         let child_result_thr = child_result.clone();
         let term_delay: Arc<Mutex<Option<Duration>>> = Arc::new(Mutex::new(None));
+        let process_state = Arc::new(Mutex::new(ProcessState::Running));
 
         let term_delay_thr = term_delay.clone();
 
@@ -171,6 +179,8 @@ impl Running {
 
         // This thread just does a wait() on the child, and stores the result
         // in a variable.
+        let term_thr_timeout_handle = term_thr.clone();
+        let process_state_thr = process_state.clone();
         let wait_thr = thread::spawn(move || {
             // Finally, get the return code of the process.
             let &(ref lock, ref cvar) = &*child_result_thr;
@@ -185,8 +195,13 @@ impl Running {
                     }
                 }
             };
+            *process_state_thr.lock().unwrap() = ProcessState::Exited;
+
             *child_result = result;
             cvar.notify_all();
+
+            // Stop the timeout handle thread, which should exit immediately.
+            term_thr_timeout_handle.lock().unwrap().thread().unpark();
         });
 
         let stderr = match handles.remove("stderr") {
@@ -198,12 +213,12 @@ impl Running {
             child_pid: child_pid,
             term_delay: term_delay,
             input: Some(RunningInput { stream: input }),
-            // output: Some(RunningOutput { stream: master }),
             output: Some(RunningOutput { stream: output }),
             error: stderr,
             term_thr: term_thr,
             wait_thr: wait_thr,
             result: child_result,
+            state: process_state,
         }
     }
 
