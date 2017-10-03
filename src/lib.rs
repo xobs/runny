@@ -266,7 +266,8 @@ mod tests {
         let timeout_secs = 3;
         let start_time = Instant::now();
 
-        let mut running = Runny::new("/bin/bash -c 'echo -n Hi there; sleep 1000; echo -n Bye there'")
+        let mut running = Runny::new("/bin/bash -c 'echo -n Hi there; sleep 1000; echo -n Bye \
+                                      there'")
             .timeout(Duration::from_secs(timeout_secs))
             .start()
             .unwrap();
