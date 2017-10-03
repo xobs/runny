@@ -382,10 +382,14 @@ mod tests {
         assert_eq!(s, "error-test");
     }
 
-    #[cfg(unix)]
     #[test]
+    #[ignore]
     fn many_commands_true() {
-        let runny = Runny::new("/bin/true");
+        #[cfg(unix)]
+        let cmd_name = "/bin/true";
+        #[cfg(windows)]
+        let cmd_name = "cmd.exe /C \"exit 0\"";
+        let runny = Runny::new(cmd_name);
         for i in 1..10000 {
             if (i % 100) == 0 {
                 println!("true loop: {}", i);
@@ -394,10 +398,14 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
+    #[ignore]
     fn many_commands_false() {
-        let runny = Runny::new("/bin/false");
+        #[cfg(unix)]
+        let cmd_name = "/bin/false";
+        #[cfg(windows)]
+        let cmd_name = "cmd.exe /C \"exit 1\"";
+        let runny = Runny::new(cmd_name);
         for i in 1..10000 {
             if (i % 100) == 0 {
                 println!("false loop: {}", i);
