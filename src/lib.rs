@@ -25,7 +25,9 @@ use nix::unistd::{dup, pipe2};
 #[cfg(unix)]
 use nix::sys::termios;
 #[cfg(unix)]
-use nix::fcntl::O_CLOEXEC;
+use nix::fcntl::{fcntl, FD_CLOEXEC, O_CLOEXEC};
+#[cfg(unix)]
+use nix::fcntl::FcntlArg::F_SETFD;
 
 pub mod running;
 
@@ -105,12 +107,17 @@ impl Runny {
         // So send the pty through a pipe, and ignore those errors.
         //
         let (stderr_rx, stderr_tx) = pipe2(O_CLOEXEC)?;
+        fcntl(stderr_rx, F_SETFD(FD_CLOEXEC))?;
 
         let stderr = unsafe { File::from_raw_fd(stderr_rx) };
         handles.insert("stderr".to_owned(), stderr);
 
-        let stdin = unsafe { Stdio::from_raw_fd(dup(slave_fd)?) };
-        let stdout = unsafe { Stdio::from_raw_fd(slave_fd) };
+        let stdout_fd = dup(slave_fd)?;
+        fcntl(stdout_fd, F_SETFD(FD_CLOEXEC))?;
+        fcntl(slave_fd, F_SETFD(FD_CLOEXEC))?;
+        fcntl(stderr_tx, F_SETFD(FD_CLOEXEC))?;
+        let stdin = unsafe { Stdio::from_raw_fd(slave_fd) };
+        let stdout = unsafe { Stdio::from_raw_fd(stdout_fd) };
         let stderr = unsafe { Stdio::from_raw_fd(stderr_tx) };
 
         let child = cmd.stdin(stdin)
@@ -132,6 +139,9 @@ impl Runny {
                     -> Result<running::Running, RunnyError> {
         let pty = openpty(None, None)?;
 
+        fcntl(pty.master, F_SETFD(FD_CLOEXEC))?;
+        fcntl(pty.slave, F_SETFD(FD_CLOEXEC))?;
+
         // Disable character echo.
         let mut termios_master = termios::tcgetattr(pty.master)?;
         termios_master.input_flags &=
@@ -148,7 +158,10 @@ impl Runny {
 
         let child = self.spawn(cmd, pty.slave, &mut handles)?;
 
-        let stdin = unsafe { File::from_raw_fd(dup(pty.master)?) };
+        let master_dup = dup(pty.master)?;
+        fcntl(master_dup, F_SETFD(FD_CLOEXEC))?;
+
+        let stdin = unsafe { File::from_raw_fd(master_dup) };
         let stdout = unsafe { File::from_raw_fd(pty.master) };
         Ok(running::Running::new(child, stdin, stdout, self.timeout, handles))
     }
@@ -373,7 +386,10 @@ mod tests {
     #[test]
     fn many_commands_true() {
         let runny = Runny::new("/bin/true");
-        for _ in 1..100 {
+        for i in 1..10000 {
+            if (i % 100) == 0 {
+                println!("true loop: {}", i);
+            }
             assert_eq!(runny.start().unwrap().result(), 0);
         }
     }
@@ -382,7 +398,10 @@ mod tests {
     #[test]
     fn many_commands_false() {
         let runny = Runny::new("/bin/false");
-        for _ in 1..100 {
+        for i in 1..10000 {
+            if (i % 100) == 0 {
+                println!("false loop: {}", i);
+            }
             assert_ne!(runny.start().unwrap().result(), 0);
         }
     }
