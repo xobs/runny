@@ -5,7 +5,6 @@ extern crate nix;
 use std::process::Child;
 use std::process::{Command, Stdio};
 use std::io;
-use std::env;
 use std::fmt;
 use std::fs::File;
 use std::time::Duration;
@@ -159,6 +158,7 @@ impl Runny {
                     mut cmd: Command,
                     mut handles: HashMap<String, File>)
                     -> Result<running::Running, RunnyError> {
+        use std::env;
         let mut child =
             cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
 
