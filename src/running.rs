@@ -315,7 +315,7 @@ impl Running {
 
 impl Read for Running {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let mut output = match self.output {
+        let output = match self.output {
             Some(ref mut s) => s,
             None => return Err(io::Error::from_raw_os_error(9 /* EBADF */)),
         };
@@ -334,7 +334,7 @@ impl Read for Running {
 
 impl Write for Running {
     fn write(&mut self, buf: &[u8]) -> Result<usize> {
-        let mut input = match self.input {
+        let input = match self.input {
             Some(ref mut s) => s,
             None => return Err(io::Error::from_raw_os_error(9 /* EBADF */)),
         };
@@ -342,7 +342,7 @@ impl Write for Running {
     }
 
     fn flush(&mut self) -> Result<()> {
-        let mut input = match self.input {
+        let input = match self.input {
             Some(ref mut s) => s,
             None => return Err(io::Error::from_raw_os_error(9 /* EBADF */)),
         };
