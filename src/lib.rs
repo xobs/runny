@@ -7,6 +7,7 @@ use std::process::{Command, Stdio};
 use std::io;
 use std::fmt;
 use std::fs::File;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::collections::HashMap;
 
@@ -33,9 +34,9 @@ pub mod running;
 
 pub struct Runny {
     cmd: String,
-    working_directory: Option<String>,
+    working_directory: Option<PathBuf>,
     timeout: Option<Duration>,
-    path: Vec<String>,
+    path: Vec<PathBuf>,
 }
 
 pub enum RunnyError {
@@ -79,12 +80,12 @@ impl Runny {
         }
     }
 
-    pub fn directory(&mut self, wd: &Option<String>) -> &mut Runny {
+    pub fn directory(&mut self, wd: &Option<PathBuf>) -> &mut Runny {
         self.working_directory = wd.clone();
         self
     }
 
-    pub fn path(&mut self, path: Vec<String>) -> &mut Runny {
+    pub fn path(&mut self, path: Vec<PathBuf>) -> &mut Runny {
         self.path = path;
         self
     }
